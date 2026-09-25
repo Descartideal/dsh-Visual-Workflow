@@ -14,6 +14,10 @@ interface GroupCardProps {
   copy: Dict
   members: Array<{ id: string; label: string; status: string | null; locked?: boolean }>
   selected: boolean
+  /** 联动高亮（与角色节点同款语义：外部选择/定位聚焦到本卡）。 */
+  highlighted?: boolean
+  /** 组卡片运行状态（快照 nodes[].status；缺省不渲染徽标）。 */
+  runStatus?: { status: string; attempts: number } | null
   /** 拖拽悬停目标（左栏角色卡拖入时高亮并提示「放开以入组」）。 */
   dropTarget: boolean
   /** 组卡片自身运行中锁定（已完成/执行中）：锁角标 + 悬停提示。 */
@@ -25,10 +29,13 @@ interface GroupCardProps {
   onResizeStart(event: React.PointerEvent, id: string, direction: string): void
 }
 
-export function GroupCard({ node, copy, members, selected, dropTarget, locked, lockHint, onPointerDown, onHandlePointerDown, onMemberSelect, onResizeStart }: GroupCardProps) {
+export function GroupCard({ node, copy, members, selected, highlighted, runStatus, dropTarget, locked, lockHint, onPointerDown, onHandlePointerDown, onMemberSelect, onResizeStart }: GroupCardProps) {
   const size = nodeSizeOf(node)
   // 去重计数（历史数据可能残留重复 memberIds，避免计数虚高）
   const memberIds = [...new Set((node.data.memberIds as string[] | undefined) ?? [])]
+  // 组卡片运行状态：状态点与文案与角色节点同源（statusLabelOf 走词典，不新增文案）
+  const status = runStatus?.status ?? null
+  const statusText = statusLabelOf(copy, status)
   // 组卡片提供流程入/出接点（居中；成员节点的上下文/数据库连线走成员自身接点）
   return (
     <div
@@ -37,10 +44,12 @@ export function GroupCard({ node, copy, members, selected, dropTarget, locked, l
       style={{ left: node.position.x, top: node.position.y, width: size.w, height: size.h }}
       onPointerDown={(event) => onPointerDown(event, node.id)}
     >
-      <div className={`wf-node wf-node--group${selected ? ' is-selected' : ''}${dropTarget ? ' is-drop-target' : ''}${locked ? ' is-locked' : ''}`} title={locked ? lockHint : undefined}>
+      <div className={`wf-node wf-node--group${selected ? ' is-selected' : ''}${highlighted ? ' is-highlighted' : ''}${status === 'running' ? ' is-running' : ''}${dropTarget ? ' is-drop-target' : ''}${locked ? ' is-locked' : ''}`} title={locked ? lockHint : undefined}>
         <div className="wf-node__kind">
           <span>{String(copy.nodeKinds.group)}</span>
           <span className="wf-hint">{`${memberIds.length} ${String(copy.groupMembers)}`}</span>
+          {statusText ? <span className={`wf-status-dot is-${status}`} /> : null}
+          {statusText ? <span className="wf-hint">{statusText}</span> : null}
           {locked ? <span className="wf-node__lock-badge" title={lockHint}>🔒</span> : null}
         </div>
         {dropTarget ? <div className="wf-group__drop-hint">{String(copy.groupDropHint)}</div> : null}

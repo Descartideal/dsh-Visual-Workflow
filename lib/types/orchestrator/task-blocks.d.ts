@@ -1,3 +1,4 @@
+import { type CollabChannel } from '../prompts/index.js';
 import type { RoleNode, WorkflowDocument } from '../shared/graph-model.js';
 import type { RunSnapshot } from '../shared/types.js';
 /**
@@ -30,6 +31,11 @@ export declare function buildNodeBlocks(input: {
     documentTextLimit: number;
     /** 系统语言名（从 DSH 用户设置读取；注入「回复/注释/思考必须使用该语言」规则）。 */
     systemLanguage: string;
+    /**
+     * 协作通道（仅组内成员有意义）：official = 官方 Agent Team 邮箱；legacy = 插件自建协作工具。
+     * 缺省 legacy，保持未启用官方团队时的文案与行为。
+     */
+    collabChannel?: CollabChannel;
 }): Array<{
     type: 'text';
     text: string;

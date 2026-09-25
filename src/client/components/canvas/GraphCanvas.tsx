@@ -312,6 +312,8 @@ export function GraphCanvas(props: GraphCanvasProps) {
               copy={copy}
               members={groupMembers.get(node.id) ?? []}
               selected={node.id === selectedNode}
+              highlighted={highlightedSet.has(node.id)}
+              runStatus={runStatusOf(node.id)}
               dropTarget={dropTargetGroupId === node.id || dragHoverGroupId === node.id}
               locked={isLockedNode(node.id)}
               lockHint={nodeLockHint(node.id)}

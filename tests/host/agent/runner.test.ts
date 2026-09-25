@@ -29,6 +29,7 @@ import {
 import type { ReactGuardBridge } from '../../../src/host/agent/guards.js'
 import type { ModelSelectionSetup } from '../../../src/host/agent/model-selection.js'
 import type { ChildPromptSetup } from '../../../src/host/agent/prompt-setup.js'
+import type { ChildToolFilterSetup } from '../../../src/host/agent/child-tool-filter.js'
 import type { NodeStartInput } from '../../../src/host/orchestrator/index.js'
 import type { RoleNode, WorkflowDocument } from '../../../src/host/shared/graph-model.js'
 import { CHILD_AGENT_HIDDEN_TOOLS } from '../../../src/host/shared/protocol.js'
@@ -158,11 +159,28 @@ async function makeHarness(): Promise<RunnerHarness> {
     agents: () => agents,
     subagents: () => subagents,
     toolsView,
+    ...fakeGroupDeps(),
     react: react as unknown as ReactGuardBridge,
     modelSelection: modelSelection as unknown as ModelSelectionSetup,
     promptSetup: promptSetup as unknown as ChildPromptSetup,
   })
   return { runner, store, subagents, agents, toolsView, react, modelSelection, promptSetup }
+}
+
+/**
+ * 协作组路径依赖桩：本文件只验证节点路径，故官方 Team 视为未挂载（teams 返回 null），
+ * 工具白名单装配为无操作。协作组自身的行为由其专属测试文件覆盖。
+ */
+function fakeGroupDeps(): { teams: () => null; toolFilter: ChildToolFilterSetup } {
+  return {
+    teams: () => null,
+    toolFilter: {
+      contribution: () => () => {},
+      withPending: async <T>(_allow: readonly string[] | undefined, operation: () => Promise<T>): Promise<T> => operation(),
+      remember: () => {},
+      restore: () => () => {},
+    } as unknown as ChildToolFilterSetup,
+  }
 }
 
 function taskInput(overrides: Partial<NodeStartInput> = {}): NodeStartInput {
@@ -472,6 +490,7 @@ describe('NodeAgentRunner 创建/复用/派发', () => {
       agents: () => null,
       subagents: () => new FakeSubagents(),
       toolsView: h2.toolsView,
+      ...fakeGroupDeps(),
       react: h2.react as unknown as ReactGuardBridge,
       modelSelection: h2.modelSelection as unknown as ModelSelectionSetup,
       promptSetup: h2.promptSetup as unknown as ChildPromptSetup,
@@ -698,6 +717,7 @@ describe('DSH 0.1.2 子代理 seam（getProvider 探测 / childSetup 安装 / se
       agents: () => h.agents,
       subagents: () => rc1,
       toolsView: h.toolsView,
+      ...fakeGroupDeps(),
       react: h.react as unknown as ReactGuardBridge,
       modelSelection: h.modelSelection as unknown as ModelSelectionSetup,
       promptSetup: h.promptSetup as unknown as ChildPromptSetup,
@@ -719,6 +739,7 @@ describe('DSH 0.1.2 子代理 seam（getProvider 探测 / childSetup 安装 / se
       agents: () => h.agents,
       subagents: () => rc1,
       toolsView: h.toolsView,
+      ...fakeGroupDeps(),
       react: h.react as unknown as ReactGuardBridge,
       modelSelection: h.modelSelection as unknown as ModelSelectionSetup,
       promptSetup: h.promptSetup as unknown as ChildPromptSetup,
@@ -747,6 +768,7 @@ describe('DSH 0.1.2 子代理 seam（getProvider 探测 / childSetup 安装 / se
       agents: () => h.agents,
       subagents: () => queueOnly,
       toolsView: h.toolsView,
+      ...fakeGroupDeps(),
       react: h.react as unknown as ReactGuardBridge,
       modelSelection: h.modelSelection as unknown as ModelSelectionSetup,
       promptSetup: h.promptSetup as unknown as ChildPromptSetup,

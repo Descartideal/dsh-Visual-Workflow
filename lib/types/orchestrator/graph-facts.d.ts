@@ -1,3 +1,4 @@
+import { type CollabChannel } from '../prompts/index.js';
 import type { GraphNode, RoleNode, WorkflowDocument } from '../shared/graph-model.js';
 import type { RunSnapshot } from '../shared/types.js';
 import { WfError } from './errors.js';
@@ -36,10 +37,14 @@ export declare function collabGroupList(flow: WorkflowDocument): Array<{
 export declare function collabPromptOf(flow: WorkflowDocument, nodeId: string): string;
 /**
  * 构建某角色节点的协作成员清单块（追加到其首条用户消息）。
- * 始终列出本组全部成员（id + 角色名，告知协作对象与可发消息对象），再追加自定义协作说明。
+ * 始终列出本组全部成员（名称 + 可寻址标识，告知协作对象与可发消息对象），再追加自定义协作说明。
  * 非组内成员返回空串（不注入）。
+ *
+ * @param flow - 工作流文档。
+ * @param nodeId - 角色节点 id。
+ * @param channel - 协作通道：official 时成员以官方成员名寻址，否则以节点 id 寻址。
  */
-export declare function collabBlockOf(flow: WorkflowDocument, nodeId: string): string;
+export declare function collabBlockOf(flow: WorkflowDocument, nodeId: string, channel?: CollabChannel): string;
 /** 运行前完整性检查：缺失的启动/结束节点（按模式渲染中文名）。 */
 export declare function missingStageLabels(flow: WorkflowDocument): string[];
 /** 运行前校验（防御：保存时已校验，此处拦截非法快照）。 */

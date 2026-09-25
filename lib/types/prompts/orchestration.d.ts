@@ -1,3 +1,4 @@
+import type { CollabChannel } from './collab.js';
 /** 父代理提示词变体（三情况组装分发）：orchestrator=纯编排 / hybrid=编排+自执行 / executor=纯执行。 */
 export type ParentPromptVariant = 'orchestrator' | 'hybrid' | 'executor';
 /**
@@ -17,12 +18,19 @@ export interface OrchestrationDirectiveParams {
             id: string;
             label: string;
         }>;
-        /** 协作组成员并行说明（画布含协作组时组装该段；空数组 = 不组装协作组段）。 */
+        /** 协作组成员说明（画布含协作组时组装该段；空数组 = 不组装协作组段）。 */
         collabGroups: Array<{
             groupId: string;
             label: string;
             memberIds: string[];
         }>;
+        /**
+         * 协作通道（协作组段文案的分支依据）：
+         *   - official = 官方 Agent Team 可用 → 指示父代理对协作组卡片调用 wf_run_node 启动官方团队；
+         *   - legacy = 官方团队不可用 → 指示父代理逐个启动成员节点（既有语义）。
+         * 缺省 legacy。
+         */
+        collabChannel?: CollabChannel;
         /** 情况2（hybrid）：父代理自身执行单元身份（被流程线连接）；情况1 缺省 null。 */
         parentNode?: {
             nodeId: string;

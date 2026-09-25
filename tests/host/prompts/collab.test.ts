@@ -28,4 +28,27 @@ describe('T-005 协作成员清单块模板（始终含成员 ID+角色名 + 自
   it('同一 params 两次构建字节相同', () => {
     expect(buildCollabBlock({ members, custom: '并行通信' })).toBe(buildCollabBlock({ members, custom: '并行通信' }))
   })
+
+  it('official 通道：以成员名（target）寻址，并指示使用官方 send_message', () => {
+    const withTargets = [
+      { id: 'n-be-dev', label: '后端开发工程师', target: 'm-n-be-dev' },
+      { id: 'n-be-rev', label: '后端代码审查专家', target: 'm-n-be-rev' },
+    ]
+    const block = buildCollabBlock({ members: withTargets, custom: '', channel: 'official' })
+    for (const member of withTargets) {
+      expect(block).toContain(member.label)
+      expect(block).toContain(member.target)
+    }
+    expect(block).toContain('send_message')
+    expect(block).not.toContain('wf_ask_agent')
+    // 未标注成员名的条目回退按 id 展示（不出现空成员名）
+    const fallback = buildCollabBlock({ members: [{ id: 'n-x', label: 'X' }], custom: '', channel: 'official' })
+    expect(fallback).toContain('n-x')
+  })
+
+  it('缺省/legacy 通道：沿用插件自建协作工具文案（含成员 id）', () => {
+    const block = buildCollabBlock({ members, custom: '' })
+    expect(block).toContain('wf_ask_agent')
+    for (const member of members) expect(block).toContain(member.id)
+  })
 })

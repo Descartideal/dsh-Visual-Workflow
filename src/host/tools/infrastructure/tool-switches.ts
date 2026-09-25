@@ -32,6 +32,7 @@
 import { join } from 'node:path'
 import { stat } from 'node:fs/promises'
 import { atomicWriteJson, CorruptJsonError, readJson, withJsonLock } from '../../storage/atomic.js'
+import { DEFAULT_DISABLED_ON_FIRST_INSTALL } from '../../shared/protocol.js'
 
 /** 全局工具开关文档形态（tool-switches.json）。 */
 export interface ToolSwitchDoc {
@@ -91,10 +92,21 @@ export class ToolSwitchStore {
     }
   }
 
-  /** 装载内存快照（Service.init 时调用；幂等）：默认全部开启，只含用户关闭项。 */
+  /**
+   * 装载内存快照（Service.init 时调用；幂等）。
+   *
+   * 首次安装播种：文件**不存在**时把默认关闭清单写入磁盘，此后磁盘即唯一权威；
+   * 查询、展示、生效三者读同一份清单，不存在「内置种子 ∪ 用户关闭项」的第二份状态
+   * （那种做法会让组合管理页显示的状态与实际生效状态不一致）。
+   * 文件已存在（含被用户清空的空清单）时**不写盘**：用户的选择不被播种覆盖。
+   */
   async load(): Promise<void> {
-    this.current = new Set(await this.readDisabled())
     this.stamp = await this.stampOf()
+    if (this.stamp === null) {
+      await this.updateDisabled(() => DEFAULT_DISABLED_ON_FIRST_INSTALL)
+      return
+    }
+    this.current = new Set(await this.readDisabled())
   }
 
   /** 当前被关闭的工具名集合（瀑布过滤与白名单解析共用；同步读取）。 */
@@ -106,6 +118,25 @@ export class ToolSwitchStore {
   async readDisabled(): Promise<string[]> {
     const doc = await this.readDoc()
     return [...doc.disabled]
+  }
+
+  /**
+   * 关闭清单唯一落盘入口：读-改-写全程持同一把锁（跨进程不丢更新），
+   * 写入后同步刷新内存快照与指纹，保证「磁盘 == 内存快照」（查询、展示、生效同源）。
+   */
+  private async updateDisabled(mutate: (current: Set<string>) => Iterable<string>): Promise<string[]> {
+    const path = this.path()
+    const written = await withJsonLock(path, async () => {
+      const current = await this.readDoc()
+      const next = [...new Set(
+        [...mutate(new Set(current.disabled))].map((name) => String(name ?? '').trim()).filter(Boolean),
+      )]
+      await atomicWriteJson(path, { disabled: next })
+      return next
+    })
+    this.current = new Set(written)
+    this.stamp = await this.stampOf()
+    return [...written]
   }
 
   /** 生效态清单（异步；先跨进程刷新再取快照——GUI 端点与工具报告统一走这里）。 */
@@ -139,20 +170,11 @@ export class ToolSwitchStore {
   async setDisabled(name: string, disabled: boolean): Promise<string[]> {
     const toolName = String(name ?? '').trim()
     if (!toolName) throw new Error('工具名不能为空')
-    const path = this.path()
-    const doc = await withJsonLock(path, async () => {
-      const current = await this.readDoc()
-      const set = new Set(current.disabled)
-      if (disabled) set.add(toolName)
-      else set.delete(toolName)
-      const next = [...set]
-      await atomicWriteJson(path, { disabled: next })
-      return next
+    return await this.updateDisabled((current) => {
+      if (disabled) current.add(toolName)
+      else current.delete(toolName)
+      return current
     })
-    // 本进程写入即权威：快照与指纹同步更新（避免下一次 ensureFresh 白读一次）
-    this.current = new Set(doc)
-    this.stamp = await this.stampOf()
-    return [...doc]
   }
 
   /**
@@ -166,21 +188,13 @@ export class ToolSwitchStore {
     const toolNames = (Array.isArray(names) ? names : [])
       .map((name) => String(name ?? '').trim())
       .filter(Boolean)
-    const path = this.path()
-    const next = await withJsonLock(path, async () => {
-      const current = await this.readDoc()
-      const set = new Set(current.disabled)
+    return await this.updateDisabled((current) => {
       for (const toolName of toolNames) {
-        if (disabled) set.add(toolName)
-        else set.delete(toolName)
+        if (disabled) current.add(toolName)
+        else current.delete(toolName)
       }
-      const merged = [...set]
-      await atomicWriteJson(path, { disabled: merged })
-      return merged
+      return current
     })
-    this.current = new Set(next)
-    this.stamp = await this.stampOf()
-    return [...next]
   }
 }
 

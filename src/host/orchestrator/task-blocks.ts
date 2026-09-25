@@ -3,7 +3,7 @@
 // 节点任务块与交接契约（纯函数）：首条用户消息的组装、输入结构说明、输出契约解析。
 // 事实来源统一走 graph-facts.buildNodeContextFacts（与父代理执行单元共用同一上下文口径）。
 
-import { buildNodeTaskBlock, DEFAULT_OUTPUT_CONTRACT } from '../prompts/index.js'
+import { buildNodeTaskBlock, DEFAULT_OUTPUT_CONTRACT, type CollabChannel } from '../prompts/index.js'
 import { isGroupMember } from '../graph/index.js'
 import type { RoleNode, WorkflowDocument } from '../shared/graph-model.js'
 import type { RunSnapshot } from '../shared/types.js'
@@ -52,6 +52,11 @@ export function buildNodeBlocks(input: {
   documentTextLimit: number
   /** 系统语言名（从 DSH 用户设置读取；注入「回复/注释/思考必须使用该语言」规则）。 */
   systemLanguage: string
+  /**
+   * 协作通道（仅组内成员有意义）：official = 官方 Agent Team 邮箱；legacy = 插件自建协作工具。
+   * 缺省 legacy，保持未启用官方团队时的文案与行为。
+   */
+  collabChannel?: CollabChannel
 }): Array<{ type: 'text'; text: string }> {
   const { flow, node } = input
   const data = node.data
@@ -70,14 +75,15 @@ export function buildNodeBlocks(input: {
       filePaths,
       dbToolHint,
       isGroupMember: isGroupMember(flow, node.id),
+      collabChannel: input.collabChannel ?? 'legacy',
       inputContract: inputContractOf(node),
       outputContract: outputContract.text,
       outputContractDefaulted: outputContract.defaulted,
       systemLanguage: input.systemLanguage,
     },
   })
-  // 协作组成员：把成员清单块（含成员 ID + 角色名 + 自定义说明）追加到首条用户消息。
-  // 需求变更：协作信息不再作为系统提示词段注入，改为注入用户消息。
-  const collabBlock = collabBlockOf(flow, node.id)
+  // 协作组成员：把成员清单块（含成员标识 + 角色名 + 自定义说明）追加到首条用户消息。
+  // 协作信息不作为系统提示词段注入，只进用户消息。
+  const collabBlock = collabBlockOf(flow, node.id, input.collabChannel ?? 'legacy')
   return [{ type: 'text', text: collabBlock ? `${text}\n\n${collabBlock}` : text }]
 }

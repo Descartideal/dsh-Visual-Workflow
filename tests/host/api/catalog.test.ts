@@ -6,9 +6,10 @@
 // MCP 用例经 DSH_HOME 指向临时目录（托管区落在 profile 的 cordis.patch.yml）。
 
 import { afterEach, describe, expect, it } from 'vitest'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ToolSwitchStore } from '../../../src/host/tools/infrastructure/tool-switches.js'
+import { DEFAULT_DISABLED_ON_FIRST_INSTALL } from '../../../src/host/shared/protocol.js'
 import { cleanupAll, makeHarness, snapshotDshHome } from './fixtures/api-harness.js'
 
 const restoreDshHome = snapshotDshHome()
@@ -17,6 +18,14 @@ afterEach(async () => {
   await cleanupAll()
   restoreDshHome()
 })
+
+/**
+ * 预置「已安装过」环境：写入空清单文件，使 load 不触发首次安装播种。
+ * 用于验证既有环境与用户选择的行为。
+ */
+async function markToolSwitchesInstalled(dataDir: string): Promise<void> {
+  await writeFile(join(dataDir, 'tool-switches.json'), JSON.stringify({ disabled: [] }), 'utf8')
+}
 
 describe('组合端点', () => {
   it('toolComboPut 校验 combo- 前缀；CRUD 往返', async () => {
@@ -36,6 +45,7 @@ describe('组合端点', () => {
 describe('全局工具开关批量端点', () => {
   it('toolSwitchPutMany：批量关闭并返回更新后清单；再次批量开启移出', async () => {
     const h = await makeHarness()
+    await markToolSwitchesInstalled(h.dataDir)
     h.host.toolSwitches = new ToolSwitchStore(h.dataDir)
     await h.host.toolSwitches.load()
 
@@ -49,6 +59,7 @@ describe('全局工具开关批量端点', () => {
 
   it('toolSwitchPutMany：空集合 / 官方保留传输名过滤后为空 → 400', async () => {
     const h = await makeHarness()
+    await markToolSwitchesInstalled(h.dataDir)
     h.host.toolSwitches = new ToolSwitchStore(h.dataDir)
     await h.host.toolSwitches.load()
     await expect(h.api.handle('toolSwitchPutMany', { names: [], disabled: true })).rejects.toThrow(/一个以上/)
@@ -64,9 +75,11 @@ describe('全局工具开关批量端点', () => {
 
   it('toolSwitches/pluginCatalog：生效态口径一致（跨进程刷新，含自主编排两工具默认开启）', async () => {
     const h = await makeHarness()
+    await markToolSwitchesInstalled(h.dataDir)
     h.host.toolSwitches = new ToolSwitchStore(h.dataDir)
     await h.host.toolSwitches.load()
-    // 默认全部开启：自主编排两工具不再被种子隐藏（历史 BUG：界面显示已开启、上下文被隐藏）
+    // 既有环境（文件已存在）：不被首次安装播种覆盖；自主编排两工具默认开启
+    // （历史 BUG：界面显示已开启、上下文被隐藏）
     const initial = (await h.api.handle('toolSwitches', {})) as { disabled?: string[] }
     expect(initial.disabled).toEqual([])
     // 另一进程（同一 dataDir 的第二个 store 实例）关闭 wf_graph_patch：
@@ -81,6 +94,20 @@ describe('全局工具开关批量端点', () => {
     // pluginCatalog 的 disabledTools 与 toolSwitches 同源（同一生效态读取路径）
     const catalog = (await h.api.handle('pluginCatalog', {})) as { disabledTools?: string[] }
     expect(catalog.disabledTools).toEqual(['wf_graph_patch'])
+  })
+
+  it('首次安装：端点返回播种后的默认关闭清单（磁盘唯一权威，界面与生效同源）', async () => {
+    const h = await makeHarness()
+    h.host.toolSwitches = new ToolSwitchStore(h.dataDir)
+    await h.host.toolSwitches.load()
+
+    const state = (await h.api.handle('toolSwitches', {})) as { disabled?: string[] }
+    expect(state.disabled).toEqual([...DEFAULT_DISABLED_ON_FIRST_INSTALL])
+    expect(await h.host.toolSwitches.readDisabled()).toEqual([...DEFAULT_DISABLED_ON_FIRST_INSTALL])
+    // 用户可在组合管理页手动开启（默认值不是不可逆约束）
+    await h.api.handle('toolSwitchPut', { name: DEFAULT_DISABLED_ON_FIRST_INSTALL[0], disabled: false })
+    const reopened = (await h.api.handle('toolSwitches', {})) as { disabled?: string[] }
+    expect(reopened.disabled).toEqual([])
   })
 })
 

@@ -20,11 +20,14 @@ import { readFile } from 'node:fs/promises'
 import { dbInEdges } from '../graph/index.js'
 import type { FlowStore } from '../storage/flow-store.js'
 import type { GraphNode, RoleNode } from '../shared/graph-model.js'
-import type { NodeRunner, NodeStartInput, OrchestratorLogger } from '../orchestrator/index.js'
+import type { NodeRunner, NodeStartInput, OrchestratorLogger, GroupStartInput, GroupStartResult } from '../orchestrator/index.js'
 import { consumeReactCappedOf, type ReactGuardBridge } from './guards.js'
-import { CHILD_AGENT_HIDDEN_TOOLS, RESERVED_TRANSPORT_TOOL, WF_FINISH, WF_RUN_NODE, WF_RUN_NODE_WAIT } from '../shared/protocol.js'
+import { CHILD_AGENT_HIDDEN_TOOLS, RESERVED_TRANSPORT_TOOL, TEAM_TOOL_NAMES, WF_FINISH, WF_RUN_NODE, WF_RUN_NODE_WAIT } from '../shared/protocol.js'
 import type { ModelSelectionLike, ModelSelectionSetup, SelectionChildContext } from './model-selection.js'
 import type { ChildPromptSetup, ChildPromptState } from './prompt-setup.js'
+import type { ChildToolFilterSetup } from './child-tool-filter.js'
+import type { AgentTeamsServiceLike } from '../team/index.js'
+import { TeamGroupRunner } from './group-runner.js'
 
 // ---------------------------------------------------------------------------
 // 纯函数（签名/复用键/provider 选择）
@@ -414,6 +417,16 @@ export interface ResolveToolsInput {
 const CHILD_BLOCKED_TOOLS: readonly string[] = CHILD_AGENT_HIDDEN_TOOLS
 
 /**
+ * 官方 Team 工具名（永不进入 allow 名单）。
+ *
+ * 运行事实：官方包把这 9 个工具注册在成员**自身作用域层**，而 `tools.restrict` 的 allow/deny
+ * 只针对「可限制的全局工具名」校验并只过滤继承面——名字一旦进入名单，创建子代理时官方校验
+ * 会以「unknown global tool」抛错；反过来它们也无需进入名单：自身层注册不受 restrict 影响，
+ * 成员天然可见。因此本清单只用于**剔除**，不用于放行。
+ */
+const TEAM_BLOCKED_ALLOW_TOOLS: readonly string[] = TEAM_TOOL_NAMES
+
+/**
  * 运行时解析节点工具白名单（架构文档 §4.2 L219）：
  *   - presetId 空 → []（无工具）；
  *   - combo- 前缀 → 组合勾选 ∩ 可见工具集 + 所选 MCP 服务器前缀工具（缺失组合报错）；
@@ -449,7 +462,7 @@ export async function resolveAgentTools(input: ResolveToolsInput): Promise<strin
   // 永不可见（§4.4.2 规则 7 双保险第一层）；
   // 官方保留传输名 run_code 也必须剔除：它由官方自动注入子代理 scope（无需勾选），
   // 且进 allow 名单会让官方 tools.restrict 抛错（core/tools L1085 保留名校验）
-  allow = allow.filter((name) => !CHILD_BLOCKED_TOOLS.includes(name) && name !== RESERVED_TRANSPORT_TOOL)
+  allow = allow.filter((name) => !CHILD_BLOCKED_TOOLS.includes(name) && name !== RESERVED_TRANSPORT_TOOL && !TEAM_BLOCKED_ALLOW_TOOLS.includes(name))
   // 未注册/幽灵工具兜底（core/tools L1088-1091 unknown 校验）：allow 只能取
   // 父代理 scope 视图（全局层 ∪ 父链注册）子集——str_replace_editor 这类仅存在于
   // 无关 preset standing scope 的工具即使被组合勾选也绝不进入 allow，否则子代理
@@ -496,8 +509,15 @@ export interface NodeAgentRunnerDeps {
   agents: () => AgentsServiceLike | null
   /** subagents 服务惰性解析（调用时求值）。 */
   subagents: () => SubagentsServiceLike | null
+  /**
+   * 官方 Agent Team 服务惰性解析（协作组路径用）。
+   * 返回 null 表示官方团队未挂载：协作组回退到逐节点启动的既有路径。
+   */
+  teams: () => AgentTeamsServiceLike | null
   /** 工具视图（白名单解析）。 */
   toolsView: ToolsView
+  /** 子代理工具白名单装配（协作组成员的创建窗口内安装；节点路径由官方创建请求携带）。 */
+  toolFilter: ChildToolFilterSetup
   /** 软截停护栏桥（guards.ts）。 */
   react: ReactGuardBridge
   /** 模型选择装配（model-selection.ts）。 */
@@ -527,9 +547,42 @@ export class NodeAgentRunner implements NodeRunner {
   private readonly childIds = new Set<string>()
   /** 软截停消费适配（NodeRunner 契约）。 */
   readonly consumeReactCapped: NonNullable<NodeRunner['consumeReactCapped']>
+  /** 协作组启动器（官方 Team 路径；与节点路径共用同一套依赖与装配对象）。 */
+  private readonly groups: TeamGroupRunner
 
   constructor(private readonly deps: NodeAgentRunnerDeps) {
     this.consumeReactCapped = consumeReactCappedOf(deps.react)
+    this.groups = new TeamGroupRunner({
+      store: deps.store,
+      agents: deps.agents,
+      subagents: deps.subagents,
+      teams: deps.teams,
+      toolsView: deps.toolsView,
+      ...(deps.toolSwitches ? { toolSwitches: deps.toolSwitches } : {}),
+      react: deps.react,
+      modelSelection: deps.modelSelection,
+      toolFilter: deps.toolFilter,
+      promptSetup: deps.promptSetup,
+      ...(deps.logger ? { logger: deps.logger } : {}),
+      // 纯函数注入：与节点路径同源，杜绝成员与节点两套白名单/提示词口径
+      resolveTools: resolveAgentTools,
+      resolveRolePrompt,
+      detectProvider: detectSubagentProvider,
+      signatureOf: (node, resolvedTools, rolePrompt, injectSystemPrompt, injectToolSections, collabPrompt) =>
+        nodeChildSignature(node, resolvedTools, rolePrompt, injectSystemPrompt, injectToolSections, collabPrompt),
+    })
+  }
+
+  // ---- NodeRunner 协作组契约 -------------------------------------------------
+
+  /** 官方 Agent Team 路径是否可用（协作块文案与执行路径选择的判据）。 */
+  teamAvailable(sessionId: string): boolean {
+    return this.groups.available(sessionId)
+  }
+
+  /** 把整个协作组启动为官方 Agent Team（不可用时返回 null，由编排器回退）。 */
+  async startGroupTask(input: GroupStartInput): Promise<GroupStartResult | null> {
+    return this.groups.start(input)
   }
 
   // ---- NodeRunner 契约 -------------------------------------------------------

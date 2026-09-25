@@ -59,6 +59,15 @@ export interface RunNodeResult {
     status: 'started' | 'paused' | 'ok' | 'fail';
     childId?: string;
     output?: string;
+    /**
+     * 协作组启动路径的成员清单（仅当被启动节点是协作组卡片时给出）。
+     * childId 缺省：一个协作组对应多个成员会话，无单一 child。
+     */
+    members?: Array<{
+        nodeId: string;
+        target: string;
+        childId: string;
+    }>;
 }
 /** 官方 subagent/end 观察 payload（全字段可选，运行时守卫）。 */
 export interface SubagentEndInfo {

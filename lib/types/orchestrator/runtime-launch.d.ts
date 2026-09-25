@@ -1,7 +1,15 @@
 import { type ResumeInput, type ResumeResult } from './resume.js';
+import { type CollabChannel } from '../prompts/index.js';
 import type { StartRunOptions, StartRunResult } from './run-entry.js';
 import { RuntimeBase } from './runtime-base.js';
 export declare class RuntimeLaunch extends RuntimeBase {
+    /**
+     * 协作通道判定（编排指令与成员任务块的唯一分支依据）：
+     * 官方 Agent Team 可用（服务已挂载 + 根 Agent 存活 + 有可用 provider）→ official；
+     * 否则 legacy（父代理逐个启动成员节点，成员间用插件自建协作工具）。
+     * 判据由子代理引擎提供，编排器不直接触达官方服务。
+     */
+    protected collabChannelOf(sessionId: string): CollabChannel;
     /**
      * 启动一次「父代理编排」运行（模式一入口）。
      * 流程：校验 → 运行锁 → 建 run 状态 → 写流程事实源文件 → 构造编排指令 →

@@ -1,4 +1,4 @@
-import { type ExecutorContextFacts, type OrchestrationDirectiveParams, type ParentPromptVariant } from '../prompts/index.js';
+import { type CollabChannel, type ExecutorContextFacts, type OrchestrationDirectiveParams, type ParentPromptVariant } from '../prompts/index.js';
 import type { WorkflowDocument } from '../shared/graph-model.js';
 /**
  * 父代理提示词变体判定（三情况，纯函数）：
@@ -39,6 +39,8 @@ export declare function directiveParams(flow: WorkflowDocument, defPath: string,
     systemLanguage?: string;
     /** 「本次组织预算」末段文本（冻结快照 → 剩余量口径；P2 注入）。 */
     orgBudgetText?: string;
+    /** 协作通道（官方 Agent Team 可用性；决定协作组段文案与启动方式）。 */
+    collabChannel?: CollabChannel;
 }): OrchestrationDirectiveParams;
 /**
  * 父代理运行提示词统一组装（startRun/resumeRun 共用；三情况整体替换组装）：
@@ -72,4 +74,6 @@ export declare function buildParentRunPrompt(input: {
     systemLanguage: string;
     /** 「本次组织预算」末段文本（冻结快照 → 剩余量口径；P2 起由 startRun/resumeRun 注入）。 */
     orgBudgetText?: string;
+    /** 协作通道（官方 Agent Team 可用性；决定协作组段文案与启动方式）。 */
+    collabChannel?: CollabChannel;
 }): string;

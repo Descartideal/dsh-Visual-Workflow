@@ -145,6 +145,42 @@ export declare const CHILD_AGENT_HIDDEN_TOOLS: readonly ["wf_run_node", "wf_run_
  * 该种子已删除（默认关闭属方案错误），本常量保留为可见性元数据。
  */
 export declare const ORG_AUTHORING_TOOLS: readonly ["wf_org_catalog", "wf_graph_patch"];
+/** 创建 teammate 工具名（Lead 专属）。 */
+export declare const TEAM_SPAWN_TEAMMATE = "spawn_teammate";
+/** 向其他成员发送一条持久消息工具名。 */
+export declare const TEAM_SEND_MESSAGE = "send_message";
+/** 列出成员与可用状态工具名。 */
+export declare const TEAM_LIST_AGENTS = "list_agents";
+/** 等待下一次团队变化工具名。 */
+export declare const TEAM_WAIT_AGENT = "wait_agent";
+/** 中断某成员当前回合工具名（Lead 专属）。 */
+export declare const TEAM_INTERRUPT_AGENT = "interrupt_agent";
+/** 共享任务板：新建任务。 */
+export declare const TEAM_TASK_CREATE = "team_task_create";
+/** 共享任务板：列出任务。 */
+export declare const TEAM_TASK_LIST = "team_task_list";
+/** 共享任务板：读取单个任务。 */
+export declare const TEAM_TASK_GET = "team_task_get";
+/** 共享任务板：按 revision 更新任务。 */
+export declare const TEAM_TASK_UPDATE = "team_task_update";
+/** 官方 Team 工具全量清单（9 个；组合管理页展示与全局开关的目标集）。 */
+export declare const TEAM_TOOL_NAMES: readonly ["spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"];
+/** Lead 专属官方 Team 工具（子代理调用被拒；不进成员协作所需集）。 */
+export declare const TEAM_LEAD_ONLY_TOOLS: readonly ["spawn_teammate", "interrupt_agent"];
+/**
+ * 子代理侧协作所需的官方 Team 工具集（Lead 专属之外的全部）。
+ * 用途：校验「成员是否具备官方协作通道」；不作为 allow 名单内容（见本段顶部机制事实）。
+ */
+export declare const TEAM_CHILD_AVAILABLE_TOOLS: readonly ["send_message", "list_agents", "wait_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"];
+/**
+ * 首次安装（tool-switches.json 尚不存在）时写入磁盘的默认关闭清单。
+ *
+ * 语义：只在「文件不存在」这一个条件下播种一次，写入后磁盘即唯一权威；此后查询、
+ * 展示、生效三者读同一份磁盘清单，不存在「内置种子 ∪ 用户项」的第二份状态。
+ * spawn_teammate 默认关闭的理由（运行事实）：自行拉人会绕过插件的成员编排，
+ * 而插件创建成员走宿主对官方服务的直接调用，不经过工具注册与开关，不受本项影响。
+ */
+export declare const DEFAULT_DISABLED_ON_FIRST_INSTALL: readonly ["spawn_teammate"];
 /**
  * 官方保留的 Code Mode presentation transport 名（run_code）：
  *  - 官方 core/tools 在非 native 模式为每个 scope 自动注入（子代理本就自带，无需勾选）；
@@ -172,6 +208,15 @@ export declare const TOOL_VISIBILITY: {
     readonly optionalInject: readonly ["wf_ask", "wf_ask_agent", "wf_db_query"];
     /** 自主编排工具集（wf_org_catalog / wf_graph_patch；默认开启、父代理专属，可经全局工具开关关闭）。 */
     readonly orgAuthoring: readonly ["wf_org_catalog", "wf_graph_patch"];
+    /**
+     * 官方 Agent Team 工具集（9 个）：由官方包注册在 Team 成员作用域，插件不注册、不转写；
+     * 插件只把它作为「全局工具开关」与组合管理列表的目标集。禁止进入任何 restrict allow/deny 名单。
+     */
+    readonly officialTeam: readonly ["spawn_teammate", "send_message", "list_agents", "wait_agent", "interrupt_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"];
+    /** 子代理侧协作所需的官方 Team 工具集（Lead 专属之外）。 */
+    readonly officialTeamChildAvailable: readonly ["send_message", "list_agents", "wait_agent", "team_task_create", "team_task_list", "team_task_get", "team_task_update"];
+    /** Lead 专属官方 Team 工具集（子代理调用被官方拒绝）。 */
+    readonly officialTeamLeadOnly: readonly ["spawn_teammate", "interrupt_agent"];
 };
 /**
  * 运行状态枚举（RUN_STATUSES）：与 ./run-types.js 的 RunStatus / 架构文档 §6.1

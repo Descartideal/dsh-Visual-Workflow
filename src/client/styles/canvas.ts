@@ -366,6 +366,11 @@ g.is-locked .wf-graph__edge-hit {
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--wf-ink-2) 35%, transparent);
 }
 
+/* 协作组卡片运行中：官方团队正在执行（成员由官方机制调度），外圈品牌色提示 */
+.wf-node--group.is-running {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--wf-brand) 22%, transparent), 0 10px 26px color-mix(in srgb, var(--wf-ink) 10%, transparent);
+}
+
 .wf-node.is-locked .wf-node__label {
   opacity: .92;
 }

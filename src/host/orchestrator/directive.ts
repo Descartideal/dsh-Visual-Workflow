@@ -11,6 +11,7 @@ import {
   buildOrchestratorPrompt,
   buildParentExecutorPrompt,
   buildParentTaskSpec,
+  type CollabChannel,
   type ExecutorContextFacts,
   type OrchestrationDirectiveParams,
   type ParentPromptVariant,
@@ -72,6 +73,8 @@ export function directiveParams(
     systemLanguage?: string
     /** 「本次组织预算」末段文本（冻结快照 → 剩余量口径；P2 注入）。 */
     orgBudgetText?: string
+    /** 协作通道（官方 Agent Team 可用性；决定协作组段文案与启动方式）。 */
+    collabChannel?: CollabChannel
   },
 ): OrchestrationDirectiveParams {
   return {
@@ -81,6 +84,7 @@ export function directiveParams(
       definitionPath: defPath,
       nodes: orchestrationNodeList(flow),
       collabGroups: collabGroupList(flow),
+      collabChannel: extra?.collabChannel ?? 'legacy',
       parentNode: extra?.parentNode ?? null,
       systemLanguage: extra?.systemLanguage ?? '',
     },
@@ -124,10 +128,13 @@ export function buildParentRunPrompt(input: {
   systemLanguage: string
   /** 「本次组织预算」末段文本（冻结快照 → 剩余量口径；P2 起由 startRun/resumeRun 注入）。 */
   orgBudgetText?: string
+  /** 协作通道（官方 Agent Team 可用性；决定协作组段文案与启动方式）。 */
+  collabChannel?: CollabChannel
 }): string {
   const { flow, defPath, mode, executor, systemLanguage } = input
   const variant = parentPromptVariantOf(flow)
   const resume = input.resume
+  const collabChannel = input.collabChannel ?? 'legacy'
 
   // 情况3：纯执行（父代理为唯一参与流程的执行单元，且有执行单元内容）
   if (variant === 'executor' && executor) {
@@ -146,6 +153,7 @@ export function buildParentRunPrompt(input: {
         ...(resume ? { resume } : {}),
         ...(input.question ? { question: input.question } : {}),
         ...(input.orgBudgetText ? { orgBudgetText: input.orgBudgetText } : {}),
+        collabChannel,
         parentNode: { nodeId: executor.nodeId, nodeLabel: executor.nodeLabel },
         parentTaskBlock: buildParentTaskSpec({ facts: executor.task, runContextText: executor.runContextText, systemLanguage }),
         systemLanguage,
@@ -159,6 +167,7 @@ export function buildParentRunPrompt(input: {
       ...(resume ? { resume } : {}),
       ...(input.question ? { question: input.question } : {}),
       ...(input.orgBudgetText ? { orgBudgetText: input.orgBudgetText } : {}),
+      collabChannel,
       systemLanguage,
     }),
   )

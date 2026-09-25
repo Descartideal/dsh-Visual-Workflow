@@ -10,6 +10,13 @@ interface GroupCardProps {
         locked?: boolean;
     }>;
     selected: boolean;
+    /** 联动高亮（与角色节点同款语义：外部选择/定位聚焦到本卡）。 */
+    highlighted?: boolean;
+    /** 组卡片运行状态（快照 nodes[].status；缺省不渲染徽标）。 */
+    runStatus?: {
+        status: string;
+        attempts: number;
+    } | null;
     /** 拖拽悬停目标（左栏角色卡拖入时高亮并提示「放开以入组」）。 */
     dropTarget: boolean;
     /** 组卡片自身运行中锁定（已完成/执行中）：锁角标 + 悬停提示。 */
@@ -20,5 +27,5 @@ interface GroupCardProps {
     onMemberSelect(id: string): void;
     onResizeStart(event: React.PointerEvent, id: string, direction: string): void;
 }
-export declare function GroupCard({ node, copy, members, selected, dropTarget, locked, lockHint, onPointerDown, onHandlePointerDown, onMemberSelect, onResizeStart }: GroupCardProps): import("react").JSX.Element;
+export declare function GroupCard({ node, copy, members, selected, highlighted, runStatus, dropTarget, locked, lockHint, onPointerDown, onHandlePointerDown, onMemberSelect, onResizeStart }: GroupCardProps): import("react").JSX.Element;
 export {};

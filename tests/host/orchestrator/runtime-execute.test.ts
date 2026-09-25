@@ -6,7 +6,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { GLOBAL_RUN_CALL_LIMIT, OUTPUT_SUMMARY_LIMIT } from '../../../src/host/orchestrator/index.js'
 import { HEAD_MARKER, MID_MARKER, TAIL_MARKER } from '../../../src/host/prompts/index.js'
-import { agent, fileNode, makeFlow, type Harness, makeHarness, caller, childCaller, start, cleanupTempDirs } from './fixtures/harness.js'
+import { TEAM_SEND_MESSAGE, WF_ASK_AGENT } from '../../../src/host/shared/protocol.js'
+import type { WorkflowDocument } from '../../../src/host/shared/graph-model.js'
+import { agent, fileNode, groupNode, makeFlow, stage, type Harness, makeHarness, caller, childCaller, start, cleanupTempDirs } from './fixtures/harness.js'
 
 // 临时目录：makeHarness 登记，文件结束统一清理
 afterEach(cleanupTempDirs)
@@ -373,6 +375,119 @@ describe('wait 阻塞（§4.4.2 规则 1，模式二调度）', () => {
     const pending = h.runtime.wfRunNode(caller, { nodeId: 'n-a1', wait: true }, controller.signal)
     controller.abort()
     await expect(pending).rejects.toMatchObject({ code: 'WF_CANCELLED' })
+  })
+})
+
+describe('wfRunNode 协作组路径（官方 Agent Team）', () => {
+  /** 协作组流程：start → g1（成员 dev/rev）→ end。空成员组不生成成员节点。 */
+  function groupFlow(memberIds: string[] = ['n-dev', 'n-rev']): WorkflowDocument {
+    const labels: Record<string, string> = { 'n-dev': '后端开发工程师', 'n-rev': '后端代码审查专家' }
+    return {
+      id: 'flow-g',
+      sessionId: 'session-1',
+      mode: 'mode1',
+      name: '协作流程',
+      description: '协作目标',
+      revision: 1,
+      nodes: [
+        stage('n-start', 'start', 'mode1'),
+        groupNode('n-g1', '后端开发组', memberIds),
+        ...memberIds.map((id) => agent(id, labels[id] ?? id, { groupId: 'n-g1' })),
+        stage('n-end', 'end', 'mode1'),
+      ],
+      lines: [
+        { id: 'l1', source: 'n-start', target: 'n-g1', sourceHandle: 'flow-out', targetHandle: 'flow-in' },
+        { id: 'l2', source: 'n-g1', target: 'n-end', sourceHandle: 'flow-out', targetHandle: 'flow-in' },
+      ],
+    }
+  }
+
+  it('整组启动：调用 startGroupTask、返回成员清单、组卡片置 running、成员事件归属登记', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    const { entry } = await start(h, groupFlow())
+
+    const result = await h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })
+
+    expect(result.status).toBe('started')
+    expect(result.nodeId).toBe('n-g1')
+    expect(result.childId).toBeUndefined() // 一个组对应多个成员会话，无单一 child
+    expect(result.members).toEqual([
+      { nodeId: 'n-dev', target: 'm-n-dev', childId: 'g-child-1' },
+      { nodeId: 'n-rev', target: 'm-n-rev', childId: 'g-child-2' },
+    ])
+    expect(h.runner.groupCalls).toHaveLength(1)
+    expect(h.runner.groupCalls[0].groupId).toBe('n-g1')
+    expect(h.runner.groupCalls[0].members.map((plan) => plan.node.id)).toEqual(['n-dev', 'n-rev'])
+    // 组卡片状态与成员事件归属（成员 subagent/end 按 childIndex 回写各自节点）
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-g1')!.status).toBe('running')
+    expect(entry.inflight.has('g-child-1')).toBe(true)
+    expect(h.runtime.childMetaFor('g-child-1')).toEqual({ sessionId: 'session-1', flowId: 'flow-g', nodeId: 'n-dev' })
+  })
+
+  it('成员任务块走官方协作通道：含官方投递工具与成员名（不是自建协作工具）', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    await start(h, groupFlow())
+    await h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })
+
+    const text = h.runner.groupCalls[0].members[0].blocks[0].text
+    expect(text).toContain(TEAM_SEND_MESSAGE)
+    expect(text).toContain('m-n-dev')
+    expect(text).not.toContain(WF_ASK_AGENT)
+  })
+
+  it('成员完成回写成员节点（组内成员落 armed 待命），全部产出后组卡片聚合为 ok', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    const { entry } = await start(h, groupFlow())
+    await h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })
+
+    await h.runtime.handleSubagentEnd({ id: 'g-child-1', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '开发完成' }] })
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-dev')!.status).toBe('armed')
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-g1')!.status).toBe('running')
+
+    await h.runtime.handleSubagentEnd({ id: 'g-child-2', stopReason: 'completed', lastAssistantMessage: [{ type: 'text', text: '审查完成' }] })
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-rev')!.status).toBe('armed')
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-g1')!.status).toBe('ok')
+  })
+
+  it('官方 Team 不可用：不擅自启动成员，报可行动错误（指示逐个启动成员节点）', async () => {
+    const h = await makeHarness()
+    const { entry } = await start(h, groupFlow())
+
+    await expect(h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })).rejects.toMatchObject({ code: 'WF_TEAM_UNAVAILABLE' })
+    expect(h.runner.groupCalls).toHaveLength(0)
+    expect(h.runner.calls).toHaveLength(0)
+    // 组卡片不得停在进行中：错误路径不启动成员
+    expect(entry.snapshot.nodes.find((n) => n.nodeId === 'n-g1')?.status ?? 'pending').toBe('pending')
+    await expect(h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })).rejects.toThrow(/n-dev, n-rev/)
+  })
+
+  it('协作组无成员：明确拒绝（WF_GROUP_EMPTY）', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    await start(h, groupFlow([]))
+    await expect(h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })).rejects.toMatchObject({ code: 'WF_GROUP_EMPTY' })
+  })
+
+  it('成员不是角色(agent)节点：明确拒绝（WF_NODE_KIND）——图校验之外的运行时兜底', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    const flow = groupFlow()
+    await start(h, flow)
+    // 双向同步：运行中改图后再次调度读最新快照（此处把成员改成阶段节点 id，模拟绕过保存期校验的改动）
+    const mutated = groupFlow()
+    ;(mutated.nodes.find((n) => n.id === 'n-g1')!.data as { memberIds: string[] }).memberIds = ['n-start', 'n-end']
+    await h.store.saveWorkflow(mutated, 'session-1', { force: true })
+    await expect(h.runtime.wfRunNode(caller, { nodeId: 'n-g1' })).rejects.toMatchObject({ code: 'WF_NODE_KIND' })
+  })
+
+  it('子代理调用协作组：WF_NOT_ROOT（协作组调度仍仅限会话根 Agent）', async () => {
+    const h = await makeHarness()
+    h.runner.teamEnabled = true
+    await start(h, groupFlow())
+    await expect(h.runtime.wfRunNode(childCaller, { nodeId: 'n-g1' })).rejects.toMatchObject({ code: 'WF_NOT_ROOT' })
   })
 })
 

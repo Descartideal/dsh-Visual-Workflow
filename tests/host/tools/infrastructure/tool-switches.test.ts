@@ -2,7 +2,8 @@
 //
 // 全局工具开关模块单测：
 //   - ToolSwitchStore：持久化往返 / load 快照 / setDisabled 幂等 / 损坏文件容忍 /
-//     **默认全部开启**（用户裁决 2026.09 删除「默认关闭种子」）/ 跨进程刷新 ensureFresh；
+//     **首次安装播种默认关闭清单（磁盘唯一权威，查询=展示=生效）** / 既有文件不被覆盖 /
+//     跨进程刷新 ensureFresh；
 //   - filterToolsInAssembly 纯函数：assembly.tools 与 tool:<name> 散文段剔除、
 //     tools:sdk / tools:code-only 恒保留、disabled 空集原样返回；
 //   - registerToolSwitchFilter：瀑布读写（next 链）、跨进程刷新与即时生效语义。
@@ -18,7 +19,7 @@ import {
   type FilterContextLike,
   type PromptAssemblyLike,
 } from '../../../../src/host/tools/infrastructure/tool-switches.js'
-import { ORG_AUTHORING_TOOLS } from '../../../../src/host/shared/protocol.js'
+import { DEFAULT_DISABLED_ON_FIRST_INSTALL, ORG_AUTHORING_TOOLS, TEAM_SPAWN_TEAMMATE } from '../../../../src/host/shared/protocol.js'
 
 const cleanups: Array<() => Promise<void>> = []
 
@@ -30,6 +31,16 @@ async function makeStore(): Promise<{ dir: string; store: ToolSwitchStore }> {
   const dir = await mkdtemp(join(tmpdir(), 'vw-tool-switches-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
   return { dir, store: new ToolSwitchStore(dir) }
+}
+
+/**
+ * 预置「已安装过」环境：写入空清单文件，使 load 不触发首次安装播种。
+ * 用于验证既有环境的行为（用户选择不被播种覆盖）。
+ */
+async function makeInstalledStore(): Promise<{ dir: string; store: ToolSwitchStore }> {
+  const made = await makeStore()
+  await writeFile(join(made.dir, 'tool-switches.json'), JSON.stringify({ disabled: [] }), 'utf8')
+  return made
 }
 
 function sampleAssembly(): PromptAssemblyLike {
@@ -63,7 +74,7 @@ describe('ToolSwitchStore', () => {
   })
 
   it('setDisabled 幂等 + 开关往返 + 内存快照即时更新', async () => {
-    const { store } = await makeStore()
+    const { store } = await makeInstalledStore()
     await store.load()
     await store.setDisabled('read', true)
     await store.setDisabled('read', true)
@@ -75,7 +86,7 @@ describe('ToolSwitchStore', () => {
   })
 
   it('setDisabledMany：批量关/开 + 幂等 + 空名忽略 + 内存快照即时更新', async () => {
-    const { store } = await makeStore()
+    const { store } = await makeInstalledStore()
     await store.load()
     await store.setDisabledMany(['read', 'grep', '  ', ''], true)
     expect([...store.currentDisabled()].sort()).toEqual(['grep', 'read'])
@@ -102,20 +113,34 @@ describe('ToolSwitchStore', () => {
     expect(await store.readDisabled()).toEqual(['read'])
   })
 
-  it('默认全部开启（用户裁决 2026.09：删除「默认关闭种子」）', async () => {
+  it('首次安装（文件不存在）→ 播种默认关闭清单并落盘；查询/展示/生效三处同源', async () => {
     const { store } = await makeStore()
     await store.load()
-    // 历史 BUG：自主编排两工具曾被种子隐藏，而组合管理读磁盘清单把它显示成「已开启」，
-    // 表现为「开关间歇性失灵」。删除种子后默认全部开启，两套状态不再分叉。
+    // 播种只发生一次，且写入磁盘：磁盘清单即唯一权威（无「内置种子 ∪ 用户项」的第二份状态）
+    expect([...store.currentDisabled()]).toEqual([...DEFAULT_DISABLED_ON_FIRST_INSTALL])
+    expect(await store.readDisabled()).toEqual([...DEFAULT_DISABLED_ON_FIRST_INSTALL])
+    expect(await store.effectiveDisabled()).toEqual([...DEFAULT_DISABLED_ON_FIRST_INSTALL])
+    // 播种内容必须是官方 Lead 专属创建工具（默认关闭的唯一目的：阻止模型自行拉人）
+    expect([...DEFAULT_DISABLED_ON_FIRST_INSTALL]).toEqual([TEAM_SPAWN_TEAMMATE])
+  })
+
+  it('既有文件（含空清单）不被播种覆盖，且自主编排工具默认开启（历史种子 BUG 不回归）', async () => {
+    const { dir, store } = await makeInstalledStore()
+    await store.load()
+    // 用户环境已存在清单：空清单保持为空，不被默认关闭清单覆盖
+    expect([...store.currentDisabled()]).toEqual([])
+    expect(await store.effectiveDisabled()).toEqual([])
     for (const name of ORG_AUTHORING_TOOLS) {
       expect(store.currentDisabled().has(name)).toBe(false)
     }
-    expect([...store.currentDisabled()]).toEqual([])
-    expect(await store.effectiveDisabled()).toEqual([])
     // 用户仍可显式关闭（组合管理统一开关）
     await store.setDisabled(ORG_AUTHORING_TOOLS[0], true)
     expect(store.currentDisabled().has(ORG_AUTHORING_TOOLS[0])).toBe(true)
     expect(await store.effectiveDisabled()).toEqual([ORG_AUTHORING_TOOLS[0]])
+    // 播种不复发：再次 load（文件已存在）仍以磁盘为准
+    const reloaded = new ToolSwitchStore(dir)
+    await reloaded.load()
+    expect([...reloaded.currentDisabled()]).toEqual([ORG_AUTHORING_TOOLS[0]])
   })
 
   it('历史文件兼容：遗留 enabled 记账键被忽略，且下一次写入自然清除', async () => {
@@ -129,7 +154,7 @@ describe('ToolSwitchStore', () => {
   })
 
   it('ensureFresh：另一个进程（另一进程实例）改盘后按需重读', async () => {
-    const { dir, store } = await makeStore()
+    const { dir, store } = await makeInstalledStore()
     await store.load()
     // 模拟模式二服务进程 / 其它 dsh 进程：同一 dataDir 的第二个 store 实例
     const other = new ToolSwitchStore(dir)
@@ -146,7 +171,7 @@ describe('ToolSwitchStore', () => {
   })
 
   it('ensureFresh：指纹未变时保持快照；文件被删除按空清单重载', async () => {
-    const { dir, store } = await makeStore()
+    const { dir, store } = await makeInstalledStore()
     await store.load()
     await store.setDisabled('read', true)
     await store.ensureFresh()

@@ -43,6 +43,11 @@ export declare class VisualWorkflowHost extends Service {
     /** 子代理系统提示词与协作 Prompt 注入装配。 */
     private readonly childPrompt;
     /**
+     * 子代理工具白名单装配（创建窗口内安装 allow）。
+     * 普通节点子代理由官方创建请求携带白名单；协作组成员无法携带，只能由本装配在窗口内安装。
+     */
+    private readonly childToolFilter;
+    /**
      * 每子代理作用域装配撤销表（agentId → disposer）：由 `agent/created` 处理器在
      * 子代理创建窗口内安装四类贡献（角色提示词/工具可见性/模型选择/软截停），
      * `agent/disposed` 或宿主 dispose 时撤销。持 key 的是 agent id（而非 childId）。

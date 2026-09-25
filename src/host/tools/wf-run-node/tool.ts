@@ -34,13 +34,15 @@ export function registerWfRunNode(
     description:
       'Start one agent node of an orchestration run asynchronously. Use only in mode1: pass the node id from the flow definition file. ' +
       'Returns started with the child id immediately; do not wait for the node child. ' +
-      'If the run is paused or stopped, this call first resumes it from the checkpoint (no need to press Run on the canvas) and then starts the node. ' +
+      'A collaboration-group card starts the whole group as official Agent Team members and returns their list; ' +
+      'without the official Team capability it fails WF_TEAM_UNAVAILABLE — then start members one by one. ' +
+      'If the run is paused or stopped, this call first resumes it from the checkpoint and then starts the node. ' +
       'A pause-node id pauses the run and persists a checkpoint instead (returns paused). ' +
       'Child agents are rejected; fails with WF_* codes on invalid arguments, missing nodes, mode mismatch, or a session that never started a run.',
     parameters: {
-      nodeId: { type: 'string', required: true, description: 'Node id from the flow definition file (nodes[].id) to start. A proxy node is a real flow step: pass the proxy id and the runtime resolves it to its source node for execution — never skip a proxy or pass its source node id instead.' },
-      thinking: { type: 'string', description: 'Optional reasoning-effort override for this node run; value domain follows the official adapter.' },
-      iterationLimit: { type: 'number', description: 'Optional ReAct iteration-limit override (soft cap: the child stops calling tools and concludes).' },
+      nodeId: { type: 'string', required: true, description: 'Node id from the flow definition file (nodes[].id) to start: a role node, or a collaboration-group card to start that whole group as an official Agent Team. A proxy node is a real flow step: pass the proxy id and the runtime resolves it to its source node for execution — never skip a proxy or pass its source node id instead.' },
+      thinking: { type: 'string', description: 'Optional reasoning-effort override for this node run; value domain follows the official adapter. For a collaboration group it applies to every member.' },
+      iterationLimit: { type: 'number', description: 'Optional ReAct iteration-limit override (soft cap: the child stops calling tools and concludes). For a collaboration group it applies to every member.' },
       retryLimit: { type: 'number', description: 'Optional per-node retry-limit override (hard guard, over the node default).' },
     },
     output: {
@@ -49,8 +51,21 @@ export function registerWfRunNode(
         additionalProperties: false,
         properties: {
           nodeId: { type: 'string', required: true, description: 'The resolved node id that was started.' },
-          status: { type: 'string', required: true, enum: ['started', 'paused'] as const, description: 'started: async start; paused: pause gate.' },
-          childId: { type: 'string', description: 'The node child session id (started path).' },
+          status: { type: 'string', required: true, enum: ['started', 'paused'] as const, description: 'started: async start (a collaboration group also returns its member list); paused: pause gate.' },
+          childId: { type: 'string', description: 'The node child session id (started path). Absent when a collaboration group started several member sessions.' },
+          members: {
+            type: 'array',
+            description: 'Collaboration group only: one row per member teammate.',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                nodeId: { type: 'string', required: true, description: 'Member role node id.' },
+                target: { type: 'string', required: true, description: 'Official teammate name; use it as the send_message target.' },
+                childId: { type: 'string', required: true, description: 'Member session id.' },
+              },
+            },
+          },
         },
       },
       render: textRender,

@@ -24,6 +24,17 @@ describe('T-005 节点任务块模板（软约束双位 + 过程性信息中段 
     expect(plain).not.toContain(NODE_HARD_CONSTRAINTS.collabAskOnly)
   })
 
+  it('official 通道：组内成员注入官方 send_message 约束，且不再注入自建协作约束（双位一致）', () => {
+    const member = buildNodeTaskBlock({ facts: { ...nodeFacts, isGroupMember: true, collabChannel: 'official' } })
+    const head = member.slice(0, member.indexOf(MID_MARKER))
+    const tail = member.slice(member.indexOf(TAIL_MARKER))
+    // 双位机制：首段与末段都用官方通道约束
+    expect(head).toContain(NODE_HARD_CONSTRAINTS.collabSendOnly)
+    expect(tail).toContain(NODE_HARD_CONSTRAINTS.collabSendOnly)
+    // 通道互斥：官方通道下不得出现自建协作工具约束（否则成员收到两条互相矛盾的通信指令）
+    expect(member).not.toContain(NODE_HARD_CONSTRAINTS.collabAskOnly)
+  })
+
   it('上游产出出现在中段（首段约束之后、末段重申之前）', () => {
     const out = buildNodeTaskBlock({ facts: nodeFacts })
     const headEnd = out.indexOf(MID_MARKER)

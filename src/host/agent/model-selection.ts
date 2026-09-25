@@ -20,6 +20,8 @@
 // 「节点子代理的 provider/model 在创建时确定、运行中不切换」使用该能力，故未移植告知线；
 // 若将来允许节点级运行中切换模型，必须补齐该行为并同步测试（见同目录 AGENTS.md § 依赖边界）。
 
+import { AsyncLocalStorage } from 'node:async_hooks'
+
 /** 节点模型选择（官方 ModelSelection 同构；reasoningEffort 取值域以适配器公布为准）。 */
 export interface ModelSelectionLike {
   provider: string
@@ -94,6 +96,26 @@ export interface ModelSelectionSetup {
    */
   attach(childCtx: SelectionChildContext, selection: ModelSelectionLike): void
   /**
+   * 在创建窗口内夹住一段「本次创建应有的模型选择」。
+   *
+   * 为什么需要：selection 默认在创建完成后才写入，而创建即开始首轮推理——首条请求会落到
+   * 创建时的路由（父代理的 provider/model）。对无法经官方创建参数携带路由的子代理
+   * （协作组成员由官方 Team 服务建立，不接受 agentOptions），必须在创建窗口内就让
+   * selection 就位，否则首个步骤用错模型。非该场景无需使用本方法。
+   */
+  withPending<T>(selection: ModelSelectionLike | undefined, operation: () => Promise<T>): Promise<T>
+  /**
+   * 按 childId 记住该子代理的模型选择，供后续重发布（冷恢复）时重装。
+   *
+   * 为什么需要：可延续子代理在回合间会被销毁并冷恢复，创建窗口内写入的 selection 随之丢失；
+   * 冷恢复只依据持久描述符重建子代理路由，官方不接受成员级路由，故选择必须由本模块留存。
+   */
+  remember(childId: string, selection: ModelSelectionLike): void
+  /**
+   * 重发布时按 childId 重装已记住的选择（宿主在 `agent/created` 调用；无记录则不做任何事）。
+   */
+  restore(childId: string, childCtx: unknown): void
+  /**
    * 把父代理（会话根 Agent）的模型选择写入其 ctx（运行时直接调用）。
    * 同一 sessionId 只注册一次（此后仅更新 selection.current）；
    * 服务商/模型/思考强度在会话内可调（官方 ModelSelection 语义），非侵入仅挂载。
@@ -109,6 +131,14 @@ export interface ModelSelectionSetup {
  */
 export function createModelSelectionSetup(): ModelSelectionSetup {
   const selections = new WeakMap<object, ModelSelectionRefLike>()
+  /** 创建窗口内的选择（仅在该窗口内可见；按 childId 的留存表见 remembered）。 */
+  const pending = new AsyncLocalStorage<ModelSelectionLike | undefined>()
+  /**
+   * childId → 已记住的模型选择（重发布重装用）。
+   * 【释放路径】条目与子代理身份绑定，只增不减；内容为两个短字符串，随宿主持有的本装配
+   * 对象一起回收（宿主 dispose 后无引用）。childId 全局唯一，故不按会话再分表。
+   */
+  const remembered = new Map<string, ModelSelectionLike>()
 
   // 父代理（根 Agent）按 sessionId 的绑定表：每会话只注册一次，更新走 selection.current。
   // 【释放路径】监听器注册在根 Agent 的 ctx 上，随该 ctx 的 fiber 卸载自动移除；
@@ -118,7 +148,11 @@ export function createModelSelectionSetup(): ModelSelectionSetup {
 
   const contribution = (rawChildCtx: unknown): (() => void) => {
     const childCtx = rawChildCtx as SelectionChildContext
-    const selection: ModelSelectionRefLike = { current: undefined, assembled: undefined }
+    const pendingSelection = pending.getStore()
+    const selection: ModelSelectionRefLike = {
+      current: pendingSelection ? { ...pendingSelection } : undefined,
+      assembled: undefined,
+    }
     selections.set(childCtx, selection)
     return installModelSelectionLike(childCtx, selection)
   }
@@ -126,6 +160,24 @@ export function createModelSelectionSetup(): ModelSelectionSetup {
   const attach = (childCtx: SelectionChildContext, selection: ModelSelectionLike): void => {
     const ref = selections.get(childCtx)
     if (!ref) return // 该 child 未走本贡献（如非延续子代理/其他 provider）：静默忽略
+    ref.current = { ...selection }
+  }
+
+  const withPending = <T>(selection: ModelSelectionLike | undefined, operation: () => Promise<T>): Promise<T> =>
+    pending.run(selection, operation)
+
+  const remember = (childId: string, selection: ModelSelectionLike): void => {
+    const id = String(childId ?? '')
+    if (!id) return
+    remembered.set(id, { ...selection })
+  }
+
+  const restore = (childId: string, childCtx: unknown): void => {
+    const selection = remembered.get(String(childId ?? ''))
+    if (!selection) return
+    if (childCtx === null || typeof childCtx !== 'object') return
+    const ref = selections.get(childCtx)
+    if (!ref) return // 该 child 未走本贡献：无 selection 可写，静默跳过
     ref.current = { ...selection }
   }
 
@@ -140,5 +192,5 @@ export function createModelSelectionSetup(): ModelSelectionSetup {
     ref.current = { ...selection }
   }
 
-  return { contribution, attach, bindParent }
+  return { contribution, attach, withPending, remember, restore, bindParent }
 }

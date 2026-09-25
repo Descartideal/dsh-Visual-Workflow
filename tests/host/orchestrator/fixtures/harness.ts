@@ -16,6 +16,8 @@ import {
   type AgentHost,
   type CallerInfo,
   type CoordinatorMessage,
+  type GroupStartInput,
+  type GroupStartResult,
   type NodeRunner,
   type NodeStartInput,
   type OrchestratorConfig,
@@ -24,7 +26,7 @@ import {
   type TurnEndInfo,
 } from '../../../../src/host/orchestrator/index.js'
 import { stageLabel } from '../../../../src/host/graph/index.js'
-import type { FileNode, RoleNode, StageNode, WorkflowDocument } from '../../../../src/host/shared/graph-model.js'
+import type { FileNode, GroupNode, RoleNode, StageNode, WorkflowDocument } from '../../../../src/host/shared/graph-model.js'
 
 // ---------------------------------------------------------------------------
 // 测试替身与装配
@@ -72,6 +74,16 @@ export function fileNode(id: string, label: string, extra: Partial<FileNode['dat
     kind: 'file',
     position: { x: 0, y: 0 },
     data: { label, fileKind: 'text', content: '', fileName: '', ...extra },
+  }
+}
+
+/** 协作组节点（成员为角色节点 id；成员 data.groupId 与组 id 双向一致）。 */
+export function groupNode(id: string, label: string, memberIds: string[]): GroupNode {
+  return {
+    id,
+    kind: 'group',
+    position: { x: 0, y: 0 },
+    data: { label, collabPrompt: '组内并行', memberIds, size: { w: 300, h: 220 } },
   }
 }
 
@@ -166,7 +178,15 @@ export class FakeRunner implements NodeRunner {
    * 只在下一次调用生效（一次性），使测试能精确控制重建发生在第几次派发。
    */
   nextReplacedChildId: string | null = null
+  /**
+   * 官方 Agent Team 可用性。缺省 false：既有用例保持「协作组回退逐节点启动」的旧语义与文案；
+   * 协作组路径用例显式置 true。
+   */
+  teamEnabled = false
+  /** 协作组启动记录（startGroupTask 入参）。 */
+  groupCalls: GroupStartInput[] = []
   private seq = 0
+  private groupSeq = 0
   async startNodeTask(input: NodeStartInput): Promise<{ childId: string; created: boolean; replacedChildId?: string }> {
     this.calls.push(input)
     if (this.nextFail !== null) {
@@ -184,6 +204,23 @@ export class FakeRunner implements NodeRunner {
   }
   consumeReactCapped(childId: string): boolean {
     return this.capped.delete(childId)
+  }
+  teamAvailable(): boolean {
+    return this.teamEnabled
+  }
+  async startGroupTask(input: GroupStartInput): Promise<GroupStartResult> {
+    this.groupCalls.push(input)
+    return {
+      members: input.members.map((plan) => {
+        this.groupSeq += 1
+        return {
+          nodeId: plan.node.id,
+          target: `m-${plan.node.id}`,
+          childId: `g-child-${this.groupSeq}`,
+          reused: false,
+        }
+      }),
+    }
   }
 }
 

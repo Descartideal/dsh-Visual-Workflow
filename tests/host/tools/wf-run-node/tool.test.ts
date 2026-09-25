@@ -64,6 +64,17 @@ describe('wf_run_node 注册与 schema', () => {
     expect((schema.properties ?? {}).status).toMatchObject({ enum: ['started', 'paused'] })
   })
 
+  it('output.schema：协作组路径的 members 成员清单（每项含节点 id / 官方成员名 / 成员会话 id）', async () => {
+    const h = await makeHarness()
+    const schema = h.tools.definitions.get(WF_RUN_NODE)!.output.schema as JsonSchemaNode
+    const members = (schema.properties ?? {}).members as JsonSchemaNode
+    expect(members.type).toBe('array')
+    const item = members.items as JsonSchemaNode
+    expect(item.type).toBe('object')
+    expect(item.additionalProperties).toBe(false)
+    expect(item.required).toEqual(['nodeId', 'target', 'childId'])
+  })
+
   it('nodeId 描述明确「代理节点必须被调度、不得跳过或改用源节点」（避免二义性）', async () => {
     const h = await makeHarness()
     const props = h.tools.definitions.get(WF_RUN_NODE)!.parameters.properties ?? {}

@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CHILD_AGENT_HIDDEN_TOOLS,
   COLOR_VARS,
+  DEFAULT_DISABLED_ON_FIRST_INSTALL,
   EP_LIST_WORKFLOWS,
   EXECUTABLE_UNIT_KINDS,
   MODES,
@@ -22,6 +23,10 @@ import {
   OPTIONAL_INJECT_TOOLS,
   PARENT_AGENT_VISIBLE_TOOLS,
   RUN_STATUSES,
+  TEAM_CHILD_AVAILABLE_TOOLS,
+  TEAM_LEAD_ONLY_TOOLS,
+  TEAM_SPAWN_TEAMMATE,
+  TEAM_TOOL_NAMES,
   TOOL_VISIBILITY,
   WF_ASK,
   WF_ASK_AGENT,
@@ -156,6 +161,31 @@ describe('shared/protocol 工具名常量与可见性', () => {
     for (const t of CHILD_AGENT_HIDDEN_TOOLS) {
       expect(OPTIONAL_INJECT_TOOLS).not.toContain(t)
     }
+  })
+
+  it('官方 Agent Team 工具集：9 个齐全、Lead 专属与子代理可用子集互补且不重叠', () => {
+    expect(TEAM_TOOL_NAMES).toHaveLength(9)
+    expect(new Set(TEAM_TOOL_NAMES).size).toBe(9)
+    // 子代理可用子集 = 全量 − Lead 专属（互补，无遗漏无多余）
+    expect([...TEAM_LEAD_ONLY_TOOLS, ...TEAM_CHILD_AVAILABLE_TOOLS].sort()).toEqual([...TEAM_TOOL_NAMES].sort())
+    for (const t of TEAM_LEAD_ONLY_TOOLS) expect(TEAM_CHILD_AVAILABLE_TOOLS).not.toContain(t)
+    // 元数据表引用同一本体
+    expect(TOOL_VISIBILITY.officialTeam).toEqual(TEAM_TOOL_NAMES)
+    expect(TOOL_VISIBILITY.officialTeamChildAvailable).toEqual(TEAM_CHILD_AVAILABLE_TOOLS)
+    expect(TOOL_VISIBILITY.officialTeamLeadOnly).toEqual(TEAM_LEAD_ONLY_TOOLS)
+  })
+
+  it('官方 Team 工具不得进入任何插件侧 restrict 名单（不可限制的自身层注册工具）', () => {
+    for (const t of TEAM_TOOL_NAMES) {
+      expect(CHILD_AGENT_HIDDEN_TOOLS).not.toContain(t)
+      expect(OPTIONAL_INJECT_TOOLS).not.toContain(t)
+      expect(PARENT_AGENT_VISIBLE_TOOLS).not.toContain(t)
+    }
+  })
+
+  it('首次安装默认关闭清单只含官方成员创建工具（默认关闭的唯一目的：阻止模型自行拉人）', () => {
+    expect(DEFAULT_DISABLED_ON_FIRST_INSTALL).toEqual([TEAM_SPAWN_TEAMMATE])
+    expect(TEAM_LEAD_ONLY_TOOLS).toContain(TEAM_SPAWN_TEAMMATE)
   })
 })
 

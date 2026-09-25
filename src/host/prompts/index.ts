@@ -53,7 +53,7 @@ export {
 } from './node-task.js'
 
 // 协作成员清单块构建器（追加到组成员首条用户消息）。
-export { buildCollabBlock, type CollabBlockParams } from './collab.js'
+export { buildCollabBlock, type CollabBlockParams, type CollabChannel } from './collab.js'
 
 // 运行期「编排变更」通知文案（画布保存改变编排语义时注入父代理）。
 export {

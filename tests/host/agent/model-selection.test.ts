@@ -125,4 +125,53 @@ describe('模型选择装配（model-selection.ts）', () => {
     expect(resolvedA).toEqual({ provider: 'pa', model: 'ma', reasoningEffort: 'low' })
     expect(resolvedB).toEqual({ provider: 'pb', model: 'mb', reasoningEffort: 'high' })
   })
+
+  it('withPending：创建窗口内的选择在首次组装即就位（首条请求即用成员模型）', async () => {
+    const setup = createModelSelectionSetup()
+    const ctx = new FakeChildCtx()
+
+    await setup.withPending({ provider: 'member', model: 'member-model' }, async () => {
+      setup.contribution(ctx)
+      return undefined
+    })
+
+    const resolved = await assembleThenRequest(ctx, () => ({ provider: 'parent', model: 'parent' }))
+    expect(resolved).toEqual({ provider: 'member', model: 'member-model' })
+  })
+
+  it('withPending(undefined)：不写入选择（沿用官方继承路由）', async () => {
+    const setup = createModelSelectionSetup()
+    const ctx = new FakeChildCtx()
+
+    await setup.withPending(undefined, async () => {
+      setup.contribution(ctx)
+      return undefined
+    })
+
+    const resolved = await assembleThenRequest(ctx, () => ({ provider: 'parent', model: 'parent' }))
+    expect(resolved).toEqual({ provider: 'parent', model: 'parent' })
+  })
+
+  it('remember + restore：重发布（冷恢复）后按 childId 重装选择', async () => {
+    const setup = createModelSelectionSetup()
+    setup.remember('child-1', { provider: 'member', model: 'member-model', reasoningEffort: 'high' })
+
+    // 模拟冷恢复：全新的子代理作用域（selection 初始为空）
+    const restored = new FakeChildCtx()
+    setup.contribution(restored)
+    setup.restore('child-1', restored)
+
+    const resolved = await assembleThenRequest(restored, () => ({ provider: 'parent', model: 'parent' }))
+    expect(resolved).toEqual({ provider: 'member', model: 'member-model', reasoningEffort: 'high' })
+  })
+
+  it('restore：无留存记录 / 非本贡献作用域时静默跳过（不抛错）', async () => {
+    const setup = createModelSelectionSetup()
+    const ctx = new FakeChildCtx()
+    setup.contribution(ctx)
+
+    expect(() => setup.restore('child-unknown', ctx)).not.toThrow()
+    const resolved = await assembleThenRequest(ctx, () => ({ provider: 'parent', model: 'parent' }))
+    expect(resolved).toEqual({ provider: 'parent', model: 'parent' })
+  })
 })

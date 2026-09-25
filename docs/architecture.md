@@ -308,6 +308,41 @@ Workflow 可以把 Team 当作一个执行单元。
 
 Team 内部如何协调由 dsh 的 Team Runtime 负责。
 
+### 4.2.1 实现契约（官方 Agent Team 接入）
+
+协作组节点直接使用官方 Agent Team（`ctx.agentTeams`）作为执行与协作机制，插件只决定成员。
+
+职责划分：
+
+```text
+插件（决定成员）                          官方 Team Runtime（决定执行过程）
+├── 成员数量（组卡片 memberIds）          ├── roster 与成员生命周期
+├── 成员角色名 / System Prompt            ├── 持久邮箱（send_message）
+├── 成员模型（provider/model/reasoning）   ├── 共享任务板（team_task_*）
+└── 成员工具组合（presetId 解析）          └── wait_agent / interrupt_agent / 浏览器 roster
+```
+
+启动路径：
+
+1. 父代理对协作组卡片调用 `wf_run_node(<groupId>)`（仅模式一；模式二仍拒绝协作组节点）；
+2. 插件对 `memberIds` 中的每个角色节点调用官方 `spawnTeammate`（Lead = 会话根 Agent）；
+3. 成员级组成在**子代理创建窗口内**装配（角色 Prompt 段 / 模型选择 / 工具白名单），
+   因为官方创建请求不接受成员级模型与工具白名单；
+4. 成员会话是 Lead 的直接可延续子代理，其 `subagent/end` 经既有观察链路回写成员节点状态，
+   全部成员产出一轮后组卡片聚合为 `ok`。
+
+官方硬约束（决定了插件的成员复用策略）：
+
+* 成员名必须为小写短横线形式、长度 ≤ 64、不得为 `lead`；成员名在同一会话的 Team 内**永久不可复用**；
+* 同名成员已存在 → 复用（`send_message` 派发本轮任务），不再创建；
+* 同名成员创建失败（`failed`）→ 既不能复用也不能重建，报可行动错误（新建会话或改节点 id）；
+* 成员组成在创建时确定，签名变化无法重建，只告警；
+* roster 是**会话级**的（`TeamId` = 根会话 id），所有协作组共用一张成员表，受官方 `maxMembers` 上限约束。
+
+降级路径：官方 Team 能力不可用（服务未挂载 / 根 Agent 不存在 / 无可用子代理 provider）时，
+协作组不整组启动，而是回到逐节点语义——编排指令指示父代理逐个 `wf_run_node` 启动成员节点，
+成员间用插件自建协作工具（`wf_ask_agent`）通信。
+
 ---
 
 ## 4.3 三层职责
@@ -653,7 +688,7 @@ index.ts             唯一公共入口（barrel）
 runtime.ts           OrchestratorRuntime 收口类（继承链最终类）
 runtime-base.ts      字段/查询/上下文自动接续/清理/父代理配置注入
 runtime-launch.ts    startRun / resumeRun
-runtime-execute.ts   wf_run_node / wf_finish
+runtime-execute.ts   wf_run_node / wf_finish（含协作组整组启动）
 runtime-comm.ts      wf_ask_agent 三态协议
 runtime-observe.ts   subagent/end 回写与协作组聚合
 runtime-lifecycle.ts 终止 / 停止 / 挂起
@@ -685,8 +720,29 @@ watchdog.ts          空闲看护、扫描与宿主重启对账
 * Reasoning
 * ReAct limits
 * Child Context
+* 协作组启动（一个协作组节点 ⇄ 一批官方 teammate）
 
 Agent Runtime 建立在 Harness 官方 Agent / Subagent 能力之上。
+
+协作组路径的关键文件：
+
+```text
+group-runner.ts          协作组启动器（成员参数翻译 / 复用判定 / 官方创建与派发）
+child-tool-filter.ts     子代理工具白名单创建窗口装配（官方创建请求不接受时的替代通道）
+model-selection.ts       模型选择装配（创建窗口夹持 + 按 childId 重发布重装）
+```
+
+---
+
+## 7.5.1 team
+
+负责把官方 Agent Team 能力适配为插件可消费的最小面：
+
+* 解析并守卫官方 Team 服务（`ctx.agentTeams`），能力缺失返回 null 由调用方回退；
+* 把画布节点 id 确定性地映射为官方 teammate 名（小写短横线、长度与保留名校验）；
+* 提供成员查找等纯派生函数。
+
+本模块不持有状态，也不反向依赖 orchestrator / agent / storage。
 
 ---
 

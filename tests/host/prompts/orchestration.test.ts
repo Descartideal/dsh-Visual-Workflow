@@ -22,6 +22,7 @@ import {
   buildOrchestratorPrompt,
   buildParentTaskSpec,
 } from '../../../src/host/prompts/index.js'
+import { TEAM_SPAWN_TEAMMATE, WF_RUN_NODE } from '../../../src/host/shared/protocol.js'
 import { nodeFacts, orchFacts } from './fixtures/prompt-facts.js'
 
 describe('T-005 编排父代理提示词（情况1 纯编排）', () => {
@@ -54,6 +55,17 @@ describe('T-005 编排父代理提示词（情况1 纯编排）', () => {
     expect(withGroup.length).toBeGreaterThan(0)
     expect(without.length).toBeGreaterThan(0)
     expect(withGroup).not.toBe(without)
+  })
+
+  it('协作通道决定协作组段：official 指示整组启动官方团队并禁止自行拉人；legacy 指示逐节点并行启动', () => {
+    const official = buildOrchestratorPrompt({ facts: { ...orchFacts, collabChannel: 'official' as const }, dynamic: {} })
+    const legacy = buildOrchestratorPrompt({ facts: { ...orchFacts, collabChannel: 'legacy' as const }, dynamic: {} })
+    expect(official).not.toBe(legacy)
+    // official：整组启动入口（wf_run_node）+ 官方成员创建工具名（作为「禁止自行调用」的锚点）
+    expect(official).toContain(WF_RUN_NODE)
+    expect(official).toContain(TEAM_SPAWN_TEAMMATE)
+    // legacy：不出现官方成员创建工具名（沿用既有语义）
+    expect(legacy).not.toContain(TEAM_SPAWN_TEAMMATE)
   })
 
   it('组织预算文本仅在末段注入（P2 接入；改预算不改前缀字节）', () => {

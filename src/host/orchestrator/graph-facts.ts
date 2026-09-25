@@ -7,10 +7,11 @@
 //   - 节点执行上下文事实：dbToolHintOf、buildNodeContextFacts（上游产出/文件路径/db 提示）。
 // 全部为纯函数（不读时钟/随机源），不依赖全局状态。
 
-import { buildCollabBlock } from '../prompts/index.js'
+import { buildCollabBlock, type CollabChannel } from '../prompts/index.js'
 import { ctxInEdges, dbInEdges, nodeById, nodeParticipatesInFlow, validateFlow } from '../graph/index.js'
 import type { DatabaseNode, GraphNode, GroupNode, RoleNode, WorkflowDocument } from '../shared/graph-model.js'
 import type { RunSnapshot } from '../shared/types.js'
+import { teammateNameOf } from '../team/index.js'
 import { truncateText } from './snapshot.js'
 import { WfError } from './errors.js'
 
@@ -81,10 +82,14 @@ export function collabPromptOf(flow: WorkflowDocument, nodeId: string): string {
 
 /**
  * 构建某角色节点的协作成员清单块（追加到其首条用户消息）。
- * 始终列出本组全部成员（id + 角色名，告知协作对象与可发消息对象），再追加自定义协作说明。
+ * 始终列出本组全部成员（名称 + 可寻址标识，告知协作对象与可发消息对象），再追加自定义协作说明。
  * 非组内成员返回空串（不注入）。
+ *
+ * @param flow - 工作流文档。
+ * @param nodeId - 角色节点 id。
+ * @param channel - 协作通道：official 时成员以官方成员名寻址，否则以节点 id 寻址。
  */
-export function collabBlockOf(flow: WorkflowDocument, nodeId: string): string {
+export function collabBlockOf(flow: WorkflowDocument, nodeId: string, channel: CollabChannel = 'legacy'): string {
   const group = flow.nodes.find(
     (n): n is GraphNode & { data: { collabPrompt?: string; memberIds?: string[] } } =>
       n.kind === 'group' && ((n.data.memberIds ?? []) as string[]).includes(nodeId),
@@ -92,9 +97,9 @@ export function collabBlockOf(flow: WorkflowDocument, nodeId: string): string {
   if (!group) return ''
   const members = (group.data.memberIds ?? []).map((id) => {
     const member = nodeById(flow, id)
-    return { id, label: member ? labelOf(member) : id }
+    return { id, label: member ? labelOf(member) : id, target: teammateNameOf(id) }
   })
-  return buildCollabBlock({ members, custom: String(group.data.collabPrompt ?? '') })
+  return buildCollabBlock({ members, custom: String(group.data.collabPrompt ?? ''), channel })
 }
 
 /** 运行前完整性检查：缺失的启动/结束节点（按模式渲染中文名）。 */

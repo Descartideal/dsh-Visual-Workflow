@@ -28,12 +28,24 @@ export declare class ToolSwitchStore {
     private readDoc;
     /** 当前文件指纹（不存在返回 null；其它 IO 错误按「无变化」处理，不抛给调用方）。 */
     private stampOf;
-    /** 装载内存快照（Service.init 时调用；幂等）：默认全部开启，只含用户关闭项。 */
+    /**
+     * 装载内存快照（Service.init 时调用；幂等）。
+     *
+     * 首次安装播种：文件**不存在**时把默认关闭清单写入磁盘，此后磁盘即唯一权威；
+     * 查询、展示、生效三者读同一份清单，不存在「内置种子 ∪ 用户关闭项」的第二份状态
+     * （那种做法会让组合管理页显示的状态与实际生效状态不一致）。
+     * 文件已存在（含被用户清空的空清单）时**不写盘**：用户的选择不被播种覆盖。
+     */
     load(): Promise<void>;
     /** 当前被关闭的工具名集合（瀑布过滤与白名单解析共用；同步读取）。 */
     currentDisabled(): ReadonlySet<string>;
     /** 读取关闭清单（磁盘权威；持久化往返断言用）。 */
     readDisabled(): Promise<string[]>;
+    /**
+     * 关闭清单唯一落盘入口：读-改-写全程持同一把锁（跨进程不丢更新），
+     * 写入后同步刷新内存快照与指纹，保证「磁盘 == 内存快照」（查询、展示、生效同源）。
+     */
+    private updateDisabled;
     /** 生效态清单（异步；先跨进程刷新再取快照——GUI 端点与工具报告统一走这里）。 */
     effectiveDisabled(): Promise<string[]>;
     /**

@@ -1,10 +1,12 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type { FlowStore } from '../storage/flow-store.js';
 import type { GraphNode, RoleNode } from '../shared/graph-model.js';
-import type { NodeRunner, NodeStartInput, OrchestratorLogger } from '../orchestrator/index.js';
+import type { NodeRunner, NodeStartInput, OrchestratorLogger, GroupStartInput, GroupStartResult } from '../orchestrator/index.js';
 import { type ReactGuardBridge } from './guards.js';
 import type { ModelSelectionSetup } from './model-selection.js';
 import type { ChildPromptSetup } from './prompt-setup.js';
+import type { ChildToolFilterSetup } from './child-tool-filter.js';
+import type { AgentTeamsServiceLike } from '../team/index.js';
 /** 子代理复用键：sessionId + flowId + nodeId（跨会话同 id 工作流各自独立）。 */
 export declare function childKey(sessionId: string, flowId: string, nodeId: string): string;
 /**
@@ -188,8 +190,15 @@ export interface NodeAgentRunnerDeps {
     agents: () => AgentsServiceLike | null;
     /** subagents 服务惰性解析（调用时求值）。 */
     subagents: () => SubagentsServiceLike | null;
+    /**
+     * 官方 Agent Team 服务惰性解析（协作组路径用）。
+     * 返回 null 表示官方团队未挂载：协作组回退到逐节点启动的既有路径。
+     */
+    teams: () => AgentTeamsServiceLike | null;
     /** 工具视图（白名单解析）。 */
     toolsView: ToolsView;
+    /** 子代理工具白名单装配（协作组成员的创建窗口内安装；节点路径由官方创建请求携带）。 */
+    toolFilter: ChildToolFilterSetup;
     /** 软截停护栏桥（guards.ts）。 */
     react: ReactGuardBridge;
     /** 模型选择装配（model-selection.ts）。 */
@@ -219,7 +228,13 @@ export declare class NodeAgentRunner implements NodeRunner {
     private readonly childIds;
     /** 软截停消费适配（NodeRunner 契约）。 */
     readonly consumeReactCapped: NonNullable<NodeRunner['consumeReactCapped']>;
+    /** 协作组启动器（官方 Team 路径；与节点路径共用同一套依赖与装配对象）。 */
+    private readonly groups;
     constructor(deps: NodeAgentRunnerDeps);
+    /** 官方 Agent Team 路径是否可用（协作块文案与执行路径选择的判据）。 */
+    teamAvailable(sessionId: string): boolean;
+    /** 把整个协作组启动为官方 Agent Team（不可用时返回 null，由编排器回退）。 */
+    startGroupTask(input: GroupStartInput): Promise<GroupStartResult | null>;
     /**
      * 异步启动一个节点任务（消息驱动，立即返回）：
      *   - 首次创建：任务块已在首条 prompt 注入，子代理立即开始执行；
