@@ -10,7 +10,7 @@
 // 角色语义判定（proxyRoleOf 等）与闸门归一化（mainNodeIdOf）见 tests/host/graph/model.test.ts。
 
 import { describe, expect, it } from 'vitest'
-import { applyGraphOps } from '../../../../src/host/tools/wf-graph-patch/apply.js'
+import { applyGraphOps, applyGraphOpsTolerant } from '../../../../src/host/tools/wf-graph-patch/apply.js'
 import { proxyRoleOf, stageLabel } from '../../../../src/host/graph/index.js'
 import { WfError } from '../../../../src/host/orchestrator/index.js'
 import type { GraphNode, Line, WorkflowDocument } from '../../../../src/host/shared/graph-model.js'
@@ -47,6 +47,14 @@ function proxyNode(id: string, sourceId: string, data?: { label?: string; role?:
 
 function flowLine(id: string, source: string, target: string): Line {
   return { id, source, target, sourceHandle: 'flow-out', targetHandle: 'flow-in' }
+}
+
+/** 最小文档壳：只关心节点集，连线由用例自行补齐。 */
+function flowOf(nodes: GraphNode[]): WorkflowDocument {
+  return {
+    id: 'wf-1', sessionId: 'session-1', mode: 'mode1', name: 'x', description: '', revision: 1,
+    nodes, lines: [],
+  }
 }
 
 /** 含闸门的最小合法图：start → m1(→p1) → a1 → end。 */
@@ -126,10 +134,6 @@ describe('角色节点 data 补全（normalizeRoleNodeData）', () => {
   // 入参用严格契约 WorkflowDocument（applyGraphOps 输入类型）；出参 doc 是宽松的
   // GraphPatchResult.doc 形状，故断言后用 roleDataOf 读取节点 data。
   type PatchDoc = ReturnType<typeof applyGraphOps>['doc']
-  const flowOf = (nodes: GraphNode[]): WorkflowDocument => ({
-    id: 'wf-1', sessionId: 'session-1', mode: 'mode1', name: 'x', description: '', revision: 1,
-    nodes, lines: [],
-  })
   const roleDataOf = (doc: PatchDoc, id: string): Record<string, unknown> => {
     const node = (doc.nodes as GraphNode[]).find((n) => n.id === id)
     return (node as unknown as { data: Record<string, unknown> }).data
@@ -236,5 +240,63 @@ describe('角色节点 data 补全（normalizeRoleNodeData）', () => {
       ops: [{ op: 'update_node_data', nodeId: 'a1', data: { label: '改', systemPromptSource: '角色说明.md' } }],
     })
     expect(roleDataOf(doc, 'a1').systemPromptSource).toBe('角色说明.md')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 容错应用（applyGraphOpsTolerant）：失败项收集 + 成功项继续
+// ---------------------------------------------------------------------------
+
+describe('容错应用（applyGraphOpsTolerant）', () => {
+  it('失败的 op 记入 errors 并跳过，其余 op 正常生效且 id 清单合并', () => {
+    const { result, errors } = applyGraphOpsTolerant({
+      doc: flowOf([stage('s', 'start'), agentNode('a1')]),
+      ops: [
+        { op: 'create_node', node: { id: 'a2', kind: 'agent', data: { label: '分析' } } },
+        { op: 'connect', source: 'a1', target: '不存在' },
+        { op: 'create_node', node: { id: 'a3', kind: 'agent', data: { label: '复核' } } },
+      ],
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toMatchObject({ index: 1, op: 'connect', code: 'WF_GRAPH_INVALID' })
+    expect(result.createdNodeIds).toEqual(['a2', 'a3'])
+    expect((result.doc.nodes as GraphNode[]).map((node) => node.id)).toContain('a3')
+  })
+
+  it('失败项不污染后续判定：抛错的 op 不留下任何中间状态', () => {
+    const { errors } = applyGraphOpsTolerant({
+      doc: flowOf([stage('s', 'start'), agentNode('a1')]),
+      ops: [
+        // group 已存在 → create_group 抛错；随后的 set_group_members 仍应看到原组成员
+        { op: 'create_group', groupId: 'a1', label: 'x' },
+        { op: 'set_group_members', groupId: 'g1', memberIds: ['a1'] },
+      ],
+    })
+    expect(errors.map((item) => item.index)).toEqual([0, 1])
+  })
+
+  it('非 WfError 直接抛出，不被收集（工具缺陷不得伪装成「某条 op 写错了」）', () => {
+    const broken = { get op(): string { throw new TypeError('内部缺陷') } }
+    expect(() => applyGraphOpsTolerant({
+      doc: flowOf([stage('s', 'start')]),
+      ops: [broken as never],
+    })).toThrow(TypeError)
+  })
+
+  it('全部成功时：结果与严格应用器语义一致（仅随机生成的连线 id 不同）', () => {
+    const doc = flowOf([stage('s', 'start'), agentNode('a1')])
+    const ops = [
+      { op: 'create_node' as const, node: { id: 'a2', kind: 'agent', data: { label: '分析' } } },
+      { op: 'connect' as const, source: 'a1', target: 'a2', sourceHandle: 'flow-out', targetHandle: 'flow-in' },
+    ]
+    const tolerant = applyGraphOpsTolerant({ doc, ops })
+    const strict = applyGraphOps({ doc, ops })
+    const nodeIds = (value: typeof strict) => (value.doc.nodes as GraphNode[]).map((node) => node.id)
+    const lineShapes = (value: typeof strict) => (value.doc.lines as Line[]).map((line) => `${line.source}>${line.sourceHandle}->${line.target}`)
+    expect(tolerant.errors).toEqual([])
+    expect(nodeIds(tolerant.result)).toEqual(nodeIds(strict))
+    expect(lineShapes(tolerant.result)).toEqual(lineShapes(strict))
+    expect(tolerant.result.createdNodeIds).toEqual(strict.createdNodeIds)
+    expect(tolerant.result.connectedLineIds).toHaveLength(strict.connectedLineIds.length)
   })
 })

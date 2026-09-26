@@ -10,6 +10,7 @@
 
 import { labelOf } from '../../orchestrator/index.js'
 import { ORG_SOP_DESIGN_METHOD, ORG_SOP_L1_GRAPH_SEMANTICS } from '../../prompts/index.js'
+import { GATE_MARKING_SEMANTICS, PATCH_CONTRACT_TEXT } from '../infrastructure/graph-op-contract.js'
 import { CATALOG_LIMITS, ID_CONVENTION, INLINE_ROLE_SEPARATOR } from './types.js'
 import type {
   CatalogComboEntry,
@@ -97,7 +98,12 @@ export function buildIndex(input: {
     models: models.items,
     roles: roles.items,
     templates: templates.items,
-    rules: { graphSemantics: ORG_SOP_L1_GRAPH_SEMANTICS, designMethod: ORG_SOP_DESIGN_METHOD },
+    rules: {
+      graphSemantics: ORG_SOP_L1_GRAPH_SEMANTICS,
+      designMethod: ORG_SOP_DESIGN_METHOD,
+      patchContract: PATCH_CONTRACT_TEXT,
+      gateMarking: GATE_MARKING_SEMANTICS,
+    },
     truncated: roles.truncated || combos.truncated || presets.truncated || models.truncated || templates.truncated,
   }
 }

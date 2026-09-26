@@ -51,6 +51,7 @@ function patchHost(h: Harness): GraphPatchHost {
       getServiceAsFlow: (id) => h.store.getServiceAsFlow(id),
       getRun: (id) => h.store.getRun(id),
       listRuns: (id) => h.store.listRuns(id),
+      listToolCombos: () => h.store.listToolCombos(),
     },
     orchestrator: {
       activeRunForSession: (sid) => h.runtime.activeRunForSession(sid),

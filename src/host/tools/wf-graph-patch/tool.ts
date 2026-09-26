@@ -1,23 +1,24 @@
 // src/host/tools/wf-graph-patch/tool.ts
 //
-// wf_graph_patch 工具注册（自主编排方案 §4.2）：父代理写图的**唯一入口**，语义三分区。
+// wf_graph_patch 工具注册：父代理写图的**唯一入口**，语义分两组。
 //
-// 三分区（同一工具、三条零共享代码路径）：
-//   A. 图结构变更（create_node/remove_node/update_node_data/connect/disconnect/create_group/
-//      set_group_members）→ 检查器校验 + 元参数硬护栏（仅 origin='agent'）+ 原子落盘；
-//   B. 元参数（set_meta）→ 归一化 + 新规模下的护栏复检 + 落 meta；
-//   C. 运行状态标记（mark_node）→ 闸门状态推进（D-07；P3 追加闸门身份判定）。
-//   同一补丁混用不同组 → WF_PATCH_MIXED_GROUPS（参数层拒绝，错误文本写明分区原因）。
+// 两组（同一工具、两条零共享代码路径）：
+//   1. 图结构变更（create_node/remove_node/update_node_data/connect/disconnect/create_group/
+//      set_group_members）→ 检查器校验 + 元参数硬护栏 + 原子落盘；
+//   2. 运行状态标记（mark_node）→ 闸门状态推进（闸门身份与次数预算按运行事实判定）。
+//   同一补丁混用不同组 → WF_PATCH_MIXED_GROUPS（参数层拒绝，错误文本写明分组原因）。
+// 元参数（组织预算）**不是**一组操作：它是约束改图方的硬护栏，被约束方不得自行调整，
+// 只能在画布/设置中由用户修改。
 //
-// 落盘规范（§3 数据流）：scope='template' 改工作流模板（规划期）；scope='instance'
-// 改当前实例（运行期），并即时刷新活跃 run 的事实源与画布回显（双向同步②）。
-// 新建通路（用户裁决 2026.09，修正方案 §4.2 的自相矛盾）：scope='template' 带
-// `create` 参数 = 新建模板（规划期主用例：无模板 → 产出模板）；不带 create 仍是
-// 「必须已存在」的更新语义。显式传入已存在的 targetId + create → WF_PATCH_CONFLICT，
-// 绝不静默覆盖。create 只允许与 graph 组同用（其余组语义不成立）。
-// 坐标纯视图数据（D-16）：补丁不接受 position，新建节点写哨兵 {0,0} 交由客户端自动布局。
+// 落盘规范：scope='template' 改工作流模板（规划期）；scope='instance' 改当前实例
+// （运行期），并即时刷新活跃 run 的事实源与画布回显（双向同步）。
+// 新建通路：scope='template' 带 `create` 参数 = 新建模板（规划期主用例：无模板 →
+// 产出模板）；不带 create 仍是「必须已存在」的更新语义。显式传入已存在的 targetId +
+// create → WF_PATCH_CONFLICT，绝不静默覆盖。create 只允许与 graph 组同用（其余组语义不成立）。
+// 坐标是纯视图数据：补丁不接受 position，新建节点写哨兵 {0,0} 交由客户端自动布局。
 //
-// 提示词规范：description 官方标准英文（何时调用/前置条件/失败语义/副作用），≤120 tokens。
+// 提示词规范：description 官方标准英文（何时调用/前置条件/失败语义/副作用）；字段形状
+// 与提交规则由 wf_org_catalog 的 rules 提供，避免同一份契约在两处常驻文本里各自漂移。
 
 import { randomUUID } from 'node:crypto'
 
@@ -31,28 +32,29 @@ import {
   effectiveOrgMeta,
   hasBlockingIssues,
   mainNodeIdOf,
-  metaLimitIssues,
   metaOfDocument,
-  normalizeOrgMeta,
+  orgBudgetOf,
   orgUsageOf,
   validateFlow,
   type GraphIssue,
 } from '../../graph/index.js'
-import { applyGraphOps, applyMarkOp, OP_FIELD_SHAPES, ROLE_NODE_DATA_CONTRACT } from './apply.js'
+import { applyGraphOpsTolerant, applyMarkOp } from './apply.js'
+import { PATCH_CONTRACT_POINTER } from '../infrastructure/graph-op-contract.js'
 import {
   GROUP_HINTS,
   groupsOf,
   unknownOpsOf,
   type GraphPatchOp,
+  type GraphPatchResult,
   type MarkPatchOp,
-  type MetaPatchOp,
   type NewTemplateSpec,
   type PatchGroup,
   type PatchOp,
+  type PatchOpFailure,
   type PatchScope,
 } from './types.js'
 import type { GraphNode, Line, WorkflowDocument, WorkflowTemplate } from '../../shared/graph-model.js'
-import type { OrgMeta } from '../../shared/types.js'
+import type { OrgBudget } from '../../shared/types.js'
 import type { MilestoneMarkResult, MilestoneRunFacts, RunEntry } from '../../orchestrator/index.js'
 
 /** 工具层所需宿主能力（宿主 service 的最小结构适配；单测 fake）。 */
@@ -67,7 +69,14 @@ export interface GraphPatchHost {
     saveServiceAsFlow?(doc: WorkflowDocument, sessionId: string, options: { expectedRevision: number; keepServerFields?: boolean }): Promise<WorkflowDocument>
     getRun(runId: string): Promise<unknown>
     listRuns(flowId: string): Promise<unknown[]>
+    /** 工具组合清单：节点 presetId 的取值来源之一（存在性校验用）。 */
+    listToolCombos(): Promise<unknown[]>
   }
+  /**
+   * agent preset 目录（presetId 的另一取值来源）。
+   * 属 best-effort 生态缝：缺失或枚举失败时该来源不参与存在性判定。
+   */
+  listPresets?: () => Promise<Array<{ id?: unknown }>>
   /** 编排运行时能力（mark_node 路径 + 事实源刷新 + 空闲基准）。 */
   orchestrator: {
     activeRunForSession(sessionId: string): RunEntry | null
@@ -98,18 +107,44 @@ export interface GraphPatchToolResult {
   targetId: string
   revision: number
   applied: number
+  /**
+   * 只读预算：生效元参数上限 + 当前规模 → 剩余量。
+   * 为什么进返回体：元参数对改图方是硬护栏且**不可自行调整**，父代理需要立刻看到
+   * 「还剩多少规模」，否则只能靠撞护栏报错来试出边界。
+   */
+  budget: OrgBudget
   warnings: Array<{ code: string; message: string }>
   /** true = 本次补丁新建了模板（scope=template + create）；targetId 即新模板 id。 */
   newTemplate?: boolean
-  /** mark_node 后本 run 已完成的闸门次数（D-21：不含首次编排）。 */
+  /** mark_node 后本 run 已完成的闸门次数（不含首次编排）。 */
   milestoneUsed?: number
   created?: string[]
   removed?: string[]
   updated?: string[]
   connected?: string[]
   disconnected?: string[]
-  meta?: OrgMeta
   marked?: { nodeId: string; status: 'ok' | 'fail'; runId: string }
+}
+
+/** 由图文档与已用量组装只读预算（生效元参数按文档声明归一）。 */
+function budgetOf(doc: WorkflowDocument, options: { milestoneUsed?: number; patchOps?: number } = {}): OrgBudget {
+  return orgBudgetOf(effectiveOrgMeta(metaOfDocument(doc)), orgUsageOf(doc, options))
+}
+
+/**
+ * 标记组的预算：闸门维度取运行事实，其余维度取文档生效元参数。
+ * 为什么闸门维度不看文档：闸门次数预算在运行期由运行快照冻结——用户在画布上改元参数
+ * 不会改变本次运行的闸门判定，以文档为准会让「还剩几次闸门」与状态机判定相反。
+ */
+function markBudgetOf(
+  flow: WorkflowDocument,
+  options: { milestoneMax: number; milestoneUsed: number; patchOps: number },
+): OrgBudget {
+  const meta = {
+    ...effectiveOrgMeta(metaOfDocument(flow)),
+    milestoneMax: Math.max(0, Math.floor(Number(options.milestoneMax) || 0)),
+  }
+  return orgBudgetOf(meta, orgUsageOf(flow, { milestoneUsed: options.milestoneUsed, patchOps: options.patchOps }))
 }
 
 /** 检查器 issue → 返回体 warnings（warning 级不阻断）。 */
@@ -132,8 +167,25 @@ function throwGraphInvalid(issues: GraphIssue[]): never {
   throw new WfError(`补丁被图检查器阻断（${issues.length} 项）：\n${detail}`, 'WF_GRAPH_INVALID')
 }
 
-/** 补丁 op 数上限（元参数 patchOpsMax 由 A/B 组各自在护栏里判定；此处只做整体 sanity）。 */
+/** 补丁 op 数上限（元参数 patchOpsMax 由检查器护栏判定；此处只做整体 sanity）。 */
 const PATCH_OPS_HARD_LIMIT = 200
+
+/**
+ * 单条 op 失败清单 → 聚合错误（整批拒绝）。
+ *
+ * 为什么必须一次列全：ops 之间存在有序依赖，逐条试错会让父代理对同一批补丁反复重试；
+ * 一次列全它可以一轮改完。
+ * 为什么消息里保留每条自己的错误码：只有码能让模型分辨「改入参形状」还是「改图」。
+ * 批次级码取一致语义：全部为参数层错误才是 WF_BAD_ARGS，出现图语义错误则归 WF_GRAPH_INVALID。
+ */
+function throwPatchErrors(errors: PatchOpFailure[]): never {
+  const detail = errors.map((item) => `#${item.index + 1} ${item.op} [${item.code}] ${item.message}`).join('\n')
+  const code = errors.every((item) => item.code === 'WF_BAD_ARGS') ? 'WF_BAD_ARGS' : 'WF_GRAPH_INVALID'
+  throw new WfError(
+    `补丁未应用：${errors.length} 项操作有误，整批不落盘（目标图未被修改）\n${detail}\n修正全部问题后重新提交。`,
+    code,
+  )
+}
 
 /** 目标实际类型：工作流模板 / 实例（工作流或服务）。 */
 type TargetKind = 'template' | 'instance' | 'none'
@@ -216,34 +268,48 @@ function newTemplateDoc(id: string, spec: NewTemplateSpec): WorkflowTemplate {
   }
 }
 
-/** 混组拒绝（§4.2 参数层校验）。 */
+/**
+ * 混组拒绝（参数层校验）。
+ * 未知 op 名归为入参形状错误（WF_BAD_ARGS）而非图语义错误：否则模型会去改图，
+ * 而真正要改的是自己的 op 名。
+ */
 function assertSingleGroup(ops: PatchOp[]): PatchGroup {
   const unknown = unknownOpsOf(ops)
   if (unknown.length > 0) {
-    throw new WfError(`补丁含未知操作：${unknown.join('、')}（允许：graph / meta / mark 三组，见工具描述）`, 'WF_GRAPH_INVALID')
+    const allowed = (Object.keys(GROUP_HINTS) as PatchGroup[]).join(' / ')
+    throw new WfError(`补丁含未知操作：${unknown.join('、')}（允许的 op 组：${allowed}）`, 'WF_BAD_ARGS')
   }
   const groups = groupsOf(ops)
-  if (groups.length === 0) throw new WfError('补丁为空：ops 至少需要一个操作', 'WF_GRAPH_INVALID')
   if (groups.length > 1) {
     throw new WfError(
       `同一补丁混用了不同 op 组（${groups.map((group) => `${group}: ${GROUP_HINTS[group]}`).join('；')}）——一组一次，请拆成多次提交`,
       'WF_PATCH_MIXED_GROUPS',
     )
   }
-  return groups[0]
+  const group = groups[0]
+  if (!group) throw new WfError('补丁为空：ops 至少需要一个操作', 'WF_BAD_ARGS')
+  return group
 }
 
-/** A 组：图结构变更（校验 → 护栏 → 落盘 → 事实源刷新）。 */
+/** 图结构变更组：逐条容错应用 → 聚合拒绝或结构校验 → 元参数硬护栏 → 落盘 → 事实源刷新。 */
 async function runGraphGroup(
   host: GraphPatchHost,
-  input: { scope: PatchScope; sessionId: string; targetId: string; origin: 'agent' | 'user'; expectRevision?: number; newTemplateDoc?: WorkflowTemplate },
+  input: { scope: PatchScope; sessionId: string; targetId: string; expectRevision?: number; newTemplateDoc?: WorkflowTemplate },
   ops: GraphPatchOp[],
-): Promise<{ revision: number; issues: GraphIssue[]; result: ReturnType<typeof applyGraphOps>; savedId: string }> {
+): Promise<{ revision: number; issues: GraphIssue[]; result: GraphPatchResult; savedId: string; budget: OrgBudget }> {
   const loaded = await loadDoc(host, input)
   const doc = loaded as WorkflowDocument
-  const before = effectiveOrgMeta(metaOfDocument(doc))
-  const result = applyGraphOps({ doc, ops })
-  // 串联既有结构校验（§6.3）：先 validateFlow（结构合法性）→ 再 checkGraphInvariants（编排质量）
+  const meta = effectiveOrgMeta(metaOfDocument(doc))
+  // 逐条应用并收集全部失败项：本工具不做部分应用（ops 有序依赖 + 整图检查器，
+  // 部分应用会落盘半成品图），因此 errors 非空即整批拒绝。
+  const applied = applyGraphOpsTolerant({ doc, ops })
+  const failures = [
+    ...applied.errors,
+    ...await presetIdFailuresOf(host, ops, applied.result.doc as unknown as WorkflowDocument),
+  ]
+  if (failures.length > 0) throwPatchErrors(failures)
+  const result = applied.result
+  // 串联既有结构校验：先 validateFlow（结构合法性）→ 再 checkGraphInvariants（编排质量）
   const structural = validateFlow(result.doc as unknown as WorkflowDocument)
   if (!structural.ok) {
     throw new WfError(
@@ -251,61 +317,130 @@ async function runGraphGroup(
       'WF_GRAPH_INVALID',
     )
   }
-  const meta = input.origin === 'agent' ? before : {}
+  // 改图方恒为代理（工具不再提供来源参数）：元参数硬护栏因此永久生效。
+  const milestoneUsed = Math.max(0, Math.floor(Number(host.milestoneUsedOf?.(input.sessionId)) || 0))
   const issues = checkGraphInvariants({
     flow: result.doc as unknown as WorkflowDocument,
-    meta: input.origin === 'agent' ? before : undefined,
-    origin: input.origin,
+    meta,
+    origin: 'agent',
     patchOps: ops.length,
-    milestoneUsed: Math.max(0, Math.floor(Number(host.milestoneUsedOf?.(input.sessionId)) || 0)),
+    milestoneUsed,
   })
   const blocking = issues.filter((issue) => issue.level === 'error')
   if (blocking.length > 0) throwGraphInvalid(blocking)
-  void meta
-  // P4：记录「父代理最近一次补丁」——画布给这些节点加「AI 调整」角标。
-  // 只写 origin=agent；用户保存路径经 FlowStore.stripClientMeta 清除本字段，
-  // 因此角标天然只表示「用户尚未确认的代理改动」。
-  if (input.origin === 'agent') {
-    ;(result.doc as { lastPatch?: unknown }).lastPatch = {
-      origin: 'agent',
-      at: new Date().toISOString(),
-      nodeIds: [...new Set([...result.createdNodeIds, ...result.updatedNodeIds])],
-    }
+  // 记录「父代理最近一次补丁」——画布给这些节点加「AI 调整」角标。用户保存路径经
+  // FlowStore.stripClientMeta 清除本字段，因此角标天然只表示「用户尚未确认的代理改动」。
+  ;(result.doc as { lastPatch?: unknown }).lastPatch = {
+    origin: 'agent',
+    at: new Date().toISOString(),
+    nodeIds: [...new Set([...result.createdNodeIds, ...result.updatedNodeIds])],
   }
   const saved = await saveDoc(host, input, result.doc as unknown as WorkflowDocument)
-  return { revision: saved.revision, issues, result, savedId: saved.id }
+  return {
+    revision: saved.revision,
+    issues,
+    result,
+    savedId: saved.id,
+    // 预算取补丁后的规模：父代理据此判断「还能加几个节点」，而不是补丁前的旧值
+    budget: budgetOf(result.doc as unknown as WorkflowDocument, { milestoneUsed, patchOps: ops.length }),
+  }
 }
 
-/** B 组：元参数（归一化 → 新规模护栏复检 → 落 meta）。 */
-async function runMetaGroup(
+/** 目录清单里的一行（存在性校验只关心 id）。 */
+interface IdCarrier { id?: unknown }
+
+/**
+ * 本批 ops **显式写入**的 presetId 的存在性校验结果。
+ *
+ * 只校验本批写入值：节点上被保留的历史值不在本次职责内，否则一次只改标签的补丁
+ * 也会因旧值被拒。
+ * 空值不算错：`presetId` 为空是「先建骨架、后配工具组合」的合法中间态，由图检查器
+ * 以告警提示（运行期它等价于零工具集，这一点由告警文案说清）。
+ * 目录枚举为空时放弃判定：preset 清单是 best-effort 生态缝（服务不可用时返回空清单），
+ * 按空目录判定会把合法引用误判为不存在。
+ */
+async function presetIdFailuresOf(
   host: GraphPatchHost,
-  input: { scope: PatchScope; sessionId: string; targetId: string; origin: 'agent' | 'user'; expectRevision?: number },
-  ops: MetaPatchOp[],
-): Promise<{ revision: number; issues: GraphIssue[]; meta: OrgMeta }> {
-  const doc = (await loadDoc(host, input)) as WorkflowDocument
-  const merged: Partial<OrgMeta> = {}
-  for (const op of ops) Object.assign(merged, op.meta ?? {})
-  const next = normalizeOrgMeta({ ...metaOfDocument(doc), ...merged })
-  const usage = orgUsageOf(doc, {
-    milestoneUsed: Math.max(0, Math.floor(Number(host.milestoneUsedOf?.(input.sessionId)) || 0)),
+  ops: PatchOp[],
+  applied: WorkflowDocument,
+): Promise<PatchOpFailure[]> {
+  const written = writtenPresetIdsOf(ops, applied)
+  if (written.length === 0) return []
+  const known = await knownPresetIdsOf(host)
+  if (!known) return []
+  return written
+    .filter((item) => !known.has(item.presetId))
+    .map((item) => ({
+      index: item.index,
+      op: item.op,
+      code: 'WF_BAD_ARGS',
+      message: `节点「${item.nodeId}」的 presetId「${item.presetId}」不存在——取值必须来自 wf_org_catalog 的 combos[].id（组合，推荐）或 presets[].id（官方预设）；空 presetId 意味着该节点运行期没有任何工具。可用 id：${sampleOf(known)}`,
+    }))
+}
+
+/** 已知 presetId 集合（组合 id ∪ 官方 preset id）；两者都枚举不到时返回 null（放弃判定）。 */
+async function knownPresetIdsOf(host: GraphPatchHost): Promise<Set<string> | null> {
+  const combos = await host.store.listToolCombos()
+  const presets = host.listPresets ? await host.listPresets().catch(() => [] as IdCarrier[]) : []
+  const ids = new Set<string>()
+  for (const item of combos as IdCarrier[]) {
+    const id = String(item?.id ?? '').trim()
+    if (id) ids.add(id)
+  }
+  for (const item of presets) {
+    const id = String(item?.id ?? '').trim()
+    if (id) ids.add(id)
+  }
+  return ids.size > 0 ? ids : null
+}
+
+/** 候选 id 清单的可读摘要（截断，避免错误文本被目录撑爆）。 */
+function sampleOf(ids: Set<string>): string {
+  const all = [...ids]
+  const head = all.slice(0, 10).join('、')
+  return all.length > 10 ? `${head}…（共 ${all.length} 个）` : head
+}
+
+/** 本批 ops 显式写入的 presetId（create_node / update_node_data 的角色节点）。 */
+function writtenPresetIdsOf(
+  ops: PatchOp[],
+  applied: WorkflowDocument,
+): Array<{ index: number; op: string; nodeId: string; presetId: string }> {
+  const out: Array<{ index: number; op: string; nodeId: string; presetId: string }> = []
+  ops.forEach((op, index) => {
+    if (op.op === 'create_node') {
+      const node = (op as { node?: Record<string, unknown> }).node
+      const kind = String(node?.kind ?? '')
+      if (kind !== 'agent' && kind !== 'parent') return
+      const presetId = explicitPresetId((node?.data as Record<string, unknown> | undefined)?.presetId)
+      if (presetId) out.push({ index, op: 'create_node', nodeId: String(node?.id ?? '(待生成 id)'), presetId })
+      return
+    }
+    if (op.op === 'update_node_data') {
+      const nodeId = String(op.nodeId ?? '').trim()
+      // 以应用后的文档为准：同一批里先建后改的节点也能解析到
+      const target = applied.nodes.find((node) => node.id === nodeId)
+      if (!target || (target.kind !== 'agent' && target.kind !== 'parent')) return
+      const presetId = explicitPresetId((op.data as Record<string, unknown> | undefined)?.presetId)
+      if (presetId) out.push({ index, op: 'update_node_data', nodeId, presetId })
+    }
   })
-  // 收紧预算时可能立刻违反新上限：同一套硬护栏复检，避免「写坏预算把图卡住」
-  const limited = input.origin === 'agent' ? metaLimitIssues(next, usage) : []
-  const blocking = limited.filter((issue) => issue.level === 'error')
-  if (blocking.length > 0) throwGraphInvalid(blocking)
-  const updated = { ...doc, meta: next } as WorkflowDocument
-  const saved = await saveDoc(host, input, updated)
-  return { revision: saved.revision, issues: limited, meta: next }
+  return out
+}
+
+/** 显式写入的 presetId（null/undefined/空白 = 未写入，不算错误）。 */
+function explicitPresetId(raw: unknown): string {
+  return raw === undefined || raw === null ? '' : String(raw).trim()
 }
 
 /**
- * C 组：运行状态标记（闸门状态机；D-07/D-21/§5.2 扩展2）。
+ * 运行状态标记组：闸门状态机。
  * 状态机三关（任一不过即 WF_MILESTONE_INVALID，绝不静默放过）：
  *   ① 必须在**闸门轮**：fact.executorIsMilestone（由 proxy.data.role='milestone' 驱动）——
  *      纯编排轮、普通执行轮都没有可标记的闸门；
  *   ② 目标必须是**当前闸门**：nodeId 可写闸门虚拟节点 id 或父代理节点 id，两者都归一到
  *      父代理节点 id 后与 fact.executorParentId 比对；
- *   ③ 预算：status=ok 时 milestoneUsed 不得达到 milestoneMax（0 = 不限制；不含首次编排 D-21）。
+ *   ③ 预算：status=ok 时 milestoneUsed 不得达到 milestoneMax（0 = 不限制；不含首次编排）。
  * 落地：快照写入**只能经运行时的 markMilestoneNode**（运行事实唯一写者）——工具层只做
  * 判定与归一化，再持久化（persistRun 缝）。
  */
@@ -313,7 +448,7 @@ async function runMarkGroup(
   host: GraphPatchHost,
   sessionId: string,
   ops: MarkPatchOp[],
-): Promise<{ marked: { nodeId: string; status: 'ok' | 'fail'; runId: string }[]; issues: GraphIssue[] }> {
+): Promise<{ marked: { nodeId: string; status: 'ok' | 'fail'; runId: string }[]; issues: GraphIssue[]; budget: OrgBudget }> {
   const facts = host.orchestrator.milestoneFactsFor(sessionId)
   if (!facts) {
     throw new WfError('mark_node: 当前会话没有正在运行的编排（闸门标记只在运行期有意义）', 'WF_MILESTONE_INVALID')
@@ -357,7 +492,15 @@ async function runMarkGroup(
   }
   // 预算已随每次写入落在快照上（可审计 + 续跑继承；父代理自动完成路径永不写它）
   if (host.persistRun) await host.persistRun(facts.runId)
-  return { marked, issues: [] }
+  return {
+    marked,
+    issues: [],
+    budget: markBudgetOf(flow as unknown as WorkflowDocument, {
+      milestoneMax: facts.milestoneMax,
+      milestoneUsed: used,
+      patchOps: ops.length,
+    }),
+  }
 }
 
 /** 读取目标文档（模板 / 模式一实例 / 模式二服务视图）。 */
@@ -421,20 +564,23 @@ async function saveDoc(
 export async function executeGraphPatch(
   host: GraphPatchHost,
   sessionId: string,
-  args: { scope?: unknown; targetId?: unknown; ops?: unknown; origin?: unknown; expectRevision?: unknown; create?: unknown },
+  args: { scope?: unknown; targetId?: unknown; ops?: unknown; expectRevision?: unknown; create?: unknown },
 ): Promise<GraphPatchToolResult> {
   const scope = String(args?.scope ?? '') as PatchScope
   if (scope !== 'template' && scope !== 'instance') {
     throw new WfError('scope 必须是 \'template\' 或 \'instance\'', 'WF_SCOPE_INVALID')
   }
   const spec = parseNewTemplateSpec(args?.create)
-  const origin: 'agent' | 'user' = args?.origin === 'user' ? 'user' : 'agent'
   const ops = Array.isArray(args?.ops) ? (args?.ops as PatchOp[]) : []
   if (ops.length === 0) throw new WfError('补丁为空：ops 至少需要一个操作', 'WF_BAD_ARGS')
   if (ops.length > PATCH_OPS_HARD_LIMIT) {
-    throw new WfError(`单次补丁操作过多（${ops.length} > ${PATCH_OPS_HARD_LIMIT}），请拆分提交`, 'WF_GRAPH_INVALID')
+    throw new WfError(`单次补丁操作过多（${ops.length} > ${PATCH_OPS_HARD_LIMIT}），请拆分提交`, 'WF_BAD_ARGS')
   }
   const group = assertSingleGroup(ops)
+  // 闸门同一时刻只有一个：标记组一次只允许 1 条 op，否则「已应用条数」与实际标记数不符
+  if (group === 'mark' && ops.length !== 1) {
+    throw new WfError(`mark 组一次只能提交 1 条 op（当前闸门只有一个），收到 ${ops.length} 条`, 'WF_BAD_ARGS')
+  }
   const expectRevision = Number.isFinite(Number(args?.expectRevision)) ? Number(args.expectRevision) : undefined
 
   // —— create 通路的参数层约束（先于任何读盘，错误可立即自我修正） ——
@@ -442,7 +588,10 @@ export async function executeGraphPatch(
     throw new WfError("create 只能用于 scope='template'（新建的是工作流模板，不是实例）", 'WF_SCOPE_INVALID')
   }
   if (spec && group !== 'graph') {
-    throw new WfError(`create 只能与 graph 组同用（当前是 ${group} 组）：新建模板必须一次给出完整合法图，元参数请随后单独提交 set_meta`, 'WF_SCOPE_INVALID')
+    throw new WfError(
+      `create 只能与 graph 组同用（当前是 ${group} 组）：新建模板必须一次给出完整合法图`,
+      'WF_SCOPE_INVALID',
+    )
   }
   if (spec && expectRevision !== undefined) {
     throw new WfError('create 与 expectRevision 互斥：新建没有可比的旧版本', 'WF_BAD_ARGS')
@@ -467,7 +616,6 @@ export async function executeGraphPatch(
     scope,
     sessionId,
     targetId,
-    origin,
     ...(expectRevision !== undefined ? { expectRevision } : {}),
     ...(spec ? { newTemplateDoc: newTemplateDoc(targetId, spec) } : {}),
   }
@@ -475,13 +623,14 @@ export async function executeGraphPatch(
   if (!spec) await assertScopeTarget(host, scope, { sessionId, targetId })
 
   if (group === 'graph') {
-    const { revision, issues, result } = await runGraphGroup(host, baseInput, ops as GraphPatchOp[])
+    const { revision, issues, result, budget } = await runGraphGroup(host, baseInput, ops as GraphPatchOp[])
     return {
       ok: true,
       scope,
       targetId,
       revision,
       applied: ops.length,
+      budget,
       warnings: warningsOf(issues),
       // create 通路：明确告知模型「这是新模板 id，后续补丁/投产都用它」
       ...(spec ? { newTemplate: true } : {}),
@@ -492,12 +641,8 @@ export async function executeGraphPatch(
       disconnected: result.disconnectedLineIds,
     }
   }
-  if (group === 'meta') {
-    const { revision, issues, meta } = await runMetaGroup(host, baseInput, ops as MetaPatchOp[])
-    return { ok: true, scope, targetId, revision, applied: ops.length, warnings: warningsOf(issues), meta }
-  }
-  const { marked, issues } = await runMarkGroup(host, sessionId, ops as MarkPatchOp[])
-  // C 组不改文档：revision 取自运行快照（run 记录内的文档版本），避免白读一次磁盘
+  const { marked, issues, budget } = await runMarkGroup(host, sessionId, ops as MarkPatchOp[])
+  // 标记组不改文档：revision 取自运行快照（run 记录内的文档版本），避免白读一次磁盘
   const entry = host.orchestrator.activeRunForSession(sessionId)
   return {
     ok: true,
@@ -505,38 +650,13 @@ export async function executeGraphPatch(
     targetId,
     revision: Number((entry?.baseFlow as { revision?: unknown } | undefined)?.revision) || 0,
     applied: ops.length,
+    budget,
     warnings: warningsOf(issues),
     marked: marked[0],
-    // 闸门预算进度（D-21）：让父代理立刻看到「还剩几次闸门」，无需再查目录
+    // 闸门预算进度：让父代理立刻看到「还剩几次闸门」，无需再查目录
     milestoneUsed: Math.max(0, Math.floor(Number(entry?.snapshot?.milestoneUsed) || 0)),
   }
 }
-
-/**
- * graph 组各 op 的**字段契约文本**（由 OP_FIELD_SHAPES 渲染）。
- * 为什么必须出现在 Schema 里：ops 是 `additionalProperties:true` 的自由对象，模型无法从
- * JSON Schema 推断字段名；2026-09 实机取证显示，只举一个 create_node 例子时模型会对
- * connect 的端点字段靠猜（from/to），并把节点字段平铺到 op 顶层——两类失败都只能靠试错收敛。
- * 契约文本与 apply 层错误消息共用 OP_FIELD_SHAPES，保证「文档说的」和「报错说的」永远一致。
- */
-const GRAPH_OP_CONTRACT = [
-  `create_node ${OP_FIELD_SHAPES.create_node}`,
-  `remove_node ${OP_FIELD_SHAPES.remove_node}`,
-  `update_node_data ${OP_FIELD_SHAPES.update_node_data}`,
-  `connect ${OP_FIELD_SHAPES.connect}`,
-  `disconnect ${OP_FIELD_SHAPES.disconnect}`,
-  `create_group ${OP_FIELD_SHAPES.create_group}`,
-  `set_group_members ${OP_FIELD_SHAPES.set_group_members}`,
-].join('; ')
-
-/**
- * meta 组 / mark 组的 op 字段契约（与 graph 组同一「单一事实源」策略）。
- * 为什么也要写：这两个 op 此前从未在描述里出现字段名，模型只能猜 `meta` 的嵌套方式。
- */
-const META_MARK_OP_CONTRACT = [
-  "{ op:'set_meta', meta: Partial<OrgMeta> } — org budget knobs, e.g. { op:'set_meta', meta:{ nodeMax:12 } }",
-  "{ op:'mark_node', nodeId:string, status:'ok'|'fail' } — completes the CURRENT milestone gate only",
-].join('; ')
 
 /**
  * 注册 wf_graph_patch（全局层；ctx.tools.register）。
@@ -552,17 +672,16 @@ export function registerWfGraphPatch(
   }
   const def = defineTool({
     name: WF_GRAPH_PATCH,
+    // 描述只写「何时调用 / 前置条件 / 失败语义 / 副作用」，字段形状与提交规则不在此重复：
+    // 常驻文本会随每次请求付费，而完整契约按需从 wf_org_catalog 的 rules 取（同一事实源）。
     description:
-      'Apply one patch to a workflow template or the running instance. This tool has three op groups: graph structure, meta parameters, and run-state marking. A patch must use ops from ONE group at a time. ' +
-      'Planning a NEW template: pass scope=template plus create={name, description?, mode?} with graph ops that build a complete valid graph (start + executable units + end). The response returns newTemplate=true and targetId = the new template id; never pass expectRevision there. ' +
-      `graph group ops — EXACT field shapes, copy verbatim: ${GRAPH_OP_CONTRACT}. ` +
-      `meta/mark group ops: ${META_MARK_OP_CONTRACT}. ` +
-      ROLE_NODE_DATA_CONTRACT + '. ' +
-      'Connections are validated by the graph checker and persisted atomically. Missing/misspelled op fields are rejected as WF_BAD_ARGS (fix the parameter shape); real graph problems come back as WF_GRAPH_INVALID (fix the graph, suggestions included). ' +
+      'Apply one patch to a workflow template or the running instance. Two op groups: graph structure and run-state marking; a patch must use ops from ONE group at a time. ' +
+      PATCH_CONTRACT_POINTER + ' ' +
+      'Planning a NEW template: pass scope=template plus create={name, description?, mode?} with graph ops that build a complete valid graph (start + executable units + end). The response returns newTemplate=true and targetId = the new template id; expectRevision must be omitted there. ' +
+      'The patch is atomic: if ANY op fails, nothing is persisted and every failing op is reported in one reply with its own code. ' +
       'The flow graph must stay an acyclic DAG even for review rework: model "review failed" as a forward conditional branch (condition={type:"fail"}) into a repair node that rejoins the main line downstream — a back-edge to an upstream node is rejected with flowCycle. ' +
-      'meta group: set_meta — updates the org budget itself (re-checked against the current graph). ' +
-      'mark group: mark_node — completes the CURRENT milestone gate: only valid while the parent turn is a gate driven by a proxy with data.role=milestone. Pass either the gate proxy id or the parent node id; the response reports milestoneUsed. ' +
-      'Fails with WF_* codes: WF_BAD_ARGS (bad op shape), WF_PATCH_MIXED_GROUPS (mixed groups), WF_GRAPH_INVALID (checker errors, details include fixes), WF_PATCH_CONFLICT (stale expectRevision; never retried), WF_ORG_NOT_FOUND, WF_SCOPE_INVALID, WF_MILESTONE_INVALID. ' +
+      'mark group: mark_node — completes the CURRENT milestone gate only, i.e. while the parent turn is a gate driven by a proxy with data.role=milestone; the response reports milestoneUsed. ' +
+      'The response always carries a read-only budget (effective limits plus current usage and remaining room). ' +
       'Never pass node positions: coordinates are view-only and re-laid out by the canvas automatically.',
     parameters: {
       scope: { type: 'string', required: true, enum: ['template', 'instance'] as const, description: 'template: plan a reusable workflow template; instance: adjust the current running instance.' },
@@ -577,15 +696,14 @@ export function registerWfGraphPatch(
           mode: { type: 'string', enum: ['mode1', 'mode2'] as const, description: 'Workflow mode; default mode1.' },
         },
       },
-      origin: { type: 'string', enum: ['agent', 'user'] as const, description: 'Change origin; default agent. Org-budget guardrails apply only to agent changes.' },
       expectRevision: { type: 'number', description: 'Optimistic-lock revision you last read; mismatch is rejected without retry (WF_PATCH_CONFLICT).' },
       ops: {
         type: 'array',
         required: true,
         description:
-          'Patch operations; all ops must belong to ONE group (graph | meta | mark). '
-          + `Exact field shapes — copy verbatim: ${GRAPH_OP_CONTRACT}. `
-          + 'Example: [{ "op": "create_node", "node": { "kind": "agent", "id": "n1", "data": { "label": "分析" } } }, '
+          'Patch operations; all ops must belong to ONE group (graph | mark) and are applied in array order. '
+          + 'Exact field shapes are NOT listed here — read rules.patchContract from wf_org_catalog (omit ids). '
+          + 'Example: [{ "op": "create_node", "node": { "kind": "agent", "id": "n1", "data": { "label": "分析", "presetId": "<combo id>" } } }, '
           + '{ "op": "connect", "source": "n1", "target": "n2" }].',
         items: { type: 'object', additionalProperties: true },
       },
@@ -593,10 +711,8 @@ export function registerWfGraphPatch(
     output: {
       // 【关键】additionalProperties: false + 声明必须覆盖 executeGraphPatch 的全部返回字段，
       // 否则宿主对工具返回体做 JSON Schema 校验时会判定「is not a declared property」并
-      // 把成功调用变成错误（2026.09 实机验证发现的 BUG：graph 组的 created/removed/
-      // updated/connected/disconnected 与 meta/mark 两组的 meta/marked 均未声明，
-      // 三个 op 组全部可用性受损）。单测直接调 executeGraphPatch 绕过该校验，
-      // 故另加 tests/host/wf-graph-patch.test.ts 的「output schema 覆盖」用例守护。
+      // 把成功调用变成错误（实机验证发现：各组的变更清单与标记结果漏声明会让整组 op 不可用）。
+      // 单测直接调 executeGraphPatch 绕过该校验，故另有「output schema 覆盖」用例守护本文件。
       schema: {
         type: 'object',
         additionalProperties: false,
@@ -607,6 +723,8 @@ export function registerWfGraphPatch(
           revision: { type: 'number', required: true, description: 'New revision after persisting.' },
           applied: { type: 'number', required: true, description: 'Number of ops applied.' },
           warnings: { type: 'array', required: true, description: 'Checker warnings (non-blocking).', items: { type: 'object', additionalProperties: true } },
+          // 只读预算：两组都会返回（additionalProperties:true，避免嵌套字段被宿主判为未声明）
+          budget: { type: 'object', required: true, additionalProperties: true, description: 'Read-only org budget for the patched target: effective limits plus current usage and remaining room (both op groups).' },
           newTemplate: { type: 'boolean', description: 'true when this patch created a new template; targetId is then the new template id.' },
           milestoneUsed: { type: 'number', description: 'Completed milestone gates in this run after a mark_node patch (the first orchestration is not counted).' },
           // graph 组：本次补丁实际改动的 id 清单（节点/连线），供模型继续引用
@@ -615,8 +733,6 @@ export function registerWfGraphPatch(
           updated: { type: 'array', items: { type: 'string' }, description: 'Node/group ids updated by this patch (graph group).' },
           connected: { type: 'array', items: { type: 'string' }, description: 'Line ids created by this patch (graph group).' },
           disconnected: { type: 'array', items: { type: 'string' }, description: 'Line ids removed by this patch (graph group).' },
-          // meta 组：落盘后的生效元参数（规范化/夹取结果）
-          meta: { type: 'object', additionalProperties: true, description: 'Effective org meta after a set_meta patch (meta group).' },
           // mark 组：本次标记结果（nodeId/status/runId）
           marked: {
             type: 'object',

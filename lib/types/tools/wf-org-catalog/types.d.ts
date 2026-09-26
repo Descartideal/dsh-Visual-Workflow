@@ -64,10 +64,19 @@ export interface CatalogTemplateEntry {
     name: string;
     description: string;
 }
-/** 编排规则段：图语义与设计方法（文本由提示词基线常量提供，此处不复制）。 */
+/**
+ * 编排规则段：图语义、设计方法与**写图契约**。
+ * 为什么写图契约放在这里而不是工具描述里：字段形状与提交规则体积大且只在动手改图前才需要，
+ * 常驻描述要为每次请求付费；放在按需召回的目录里可让描述只保留一份指引。
+ * 文本本体在工具层基础设施的单一来源模块，此处只声明槽位（不复制常量）。
+ */
 export interface CatalogRules {
     graphSemantics: string;
     designMethod: string;
+    /** 写图契约：op 字段形状、角色节点 data 契约、提交规则、错误码语义。 */
+    patchContract: string;
+    /** 闸门标记语义（mark_node 的适用时机与判定）。 */
+    gateMarking: string;
 }
 /** 资产索引（第一次调用的返回体）。 */
 export interface CatalogIndex {

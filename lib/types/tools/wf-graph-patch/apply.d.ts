@@ -1,16 +1,5 @@
 import type { GraphNode, WorkflowDocument } from '../../shared/graph-model.js';
-import type { GraphPatchOp, GraphPatchResult, MarkPatchOp, MarkPatchResult } from './types.js';
-/**
- * 各图操作的「最小字段契约」（**单一事实源**）。
- *
- * 为什么放在这里而不是只写进工具描述（2026-09 实机取证）：
- *   模型写补丁时唯一能看到的事实源是工具 Schema，而 ops 是 `additionalProperties:true`
- *   的自由对象——描述里只举 create_node 一例时，模型对 connect 的端点字段只能猜
- *   （实测猜成 from/to，报「源节点不存在「」」）。契约文本同时供两处消费：
- *     ① wf_graph_patch 的 ops 描述（可发现性）；② 参数层错误消息（自我修正通道）。
- *   两处共用一份常量，避免文档与实现再次漂移。
- */
-export declare const OP_FIELD_SHAPES: Record<string, string>;
+import type { GraphPatchOp, GraphPatchResult, MarkPatchOp, MarkPatchResult, PatchOpFailure } from './types.js';
 /** 深拷贝文档骨架（保持元数据字段；节点/连线走 JSON 深拷贝避免共享引用）。 */
 export declare function cloneDoc(doc: WorkflowDocument): WorkflowDocument;
 /**
@@ -56,22 +45,32 @@ export declare function applyRoleNodeCreateDefaults(raw: unknown): Record<string
  */
 export declare function normalizeRoleNodeData(raw: unknown): Record<string, unknown>;
 /**
- * 角色节点（agent / parent）的 data 字段契约文本（**单一事实源**；工具描述引用）。
- *
- * 为什么必须写进工具描述：ops 是自由对象，模型只能从描述推断节点 shape。
- * 2026.09 实机结论——不写契约时模型只会给 `{ label, systemPrompt }`，
- * 而 `presetId` 为空意味着该节点运行期**零工具**（resolveAgentTools 语义），
- * 且没有自动补全（补全只补形状，不会替模型组合）。
- */
-export declare const ROLE_NODE_DATA_CONTRACT: string;
-/**
- * 应用 A 组图结构操作（按序，纯函数）。
+ * 应用图结构操作（按序，纯函数）。
  * 失败一律抛 WfError（稳定 code），调用方据此返回带修复建议的补丁错误。
  */
 export declare function applyGraphOps(input: {
     doc: WorkflowDocument;
     ops: GraphPatchOp[];
 }): GraphPatchResult;
+/**
+ * 容错应用：逐条复用严格应用器，失败的 op 记入 errors 并跳过，其余操作继续。
+ *
+ * 为什么容错（而不是遇到第一条就停）：ops 之间存在有序依赖，父代理最常见的失败模式是
+ * 一批里多条字段写错；一次只报一条会让它把同一批补丁反复重试，而失败清单一次列全后
+ * 可以一轮改完。
+ * 为什么逐条调用严格应用器：严格应用器在**内部副本**上推进，抛错时本层已成功的结果
+ * 分毫未动——失败 op 既不污染后续 op 的判定基础，也不需要回滚逻辑。
+ * 为什么只捕获 WfError：非 WfError 属于工具自身的缺陷，不能被伪装成「某条 op 写错了」。
+ * 语义前提：调用方在 errors 非空时**整批不落盘**，因此返回的结果仅供错误报告与后续 op
+ * 的判定基础使用。
+ */
+export declare function applyGraphOpsTolerant(input: {
+    doc: WorkflowDocument;
+    ops: GraphPatchOp[];
+}): {
+    result: GraphPatchResult;
+    errors: PatchOpFailure[];
+};
 /**
  * 运行状态标记（C 组）纯函数：校验节点存在 + 闸门预算，给出标记结果。
  * 状态机分工（P3）：**「必须是当前闸门轮 / 当前闸门节点」由 runMarkGroup 判定**

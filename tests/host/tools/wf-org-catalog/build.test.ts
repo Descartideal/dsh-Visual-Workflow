@@ -16,6 +16,7 @@ import {
   maskConnection,
 } from '../../../../src/host/tools/wf-org-catalog/build.js'
 import { CATALOG_LIMITS, ID_CONVENTION } from '../../../../src/host/tools/wf-org-catalog/types.js'
+import { GATE_MARKING_SEMANTICS, PATCH_CONTRACT_TEXT } from '../../../../src/host/tools/infrastructure/graph-op-contract.js'
 import { ORG_SOP_DESIGN_METHOD, ORG_SOP_L1_GRAPH_SEMANTICS } from '../../../../src/host/prompts/index.js'
 import { makeCatalogHost, roleTemplateFixture, templateFixture } from './fixtures.js'
 import type { CatalogIndex, CatalogRoleNodeEntry, CatalogWorkflowDetail } from '../../../../src/host/tools/wf-org-catalog/types.js'
@@ -48,10 +49,12 @@ describe('buildIndex（资产索引装配）', () => {
     expect(index.kind).toBe('index')
   })
 
-  it('规则段与提示词基线的常量同源（不在工具层复制文本）', () => {
+  it('规则段与提示词基线 / 写图契约的常量同源（不在工具层复制文本）', () => {
     const index = buildIndex({ roles: [], combos: [], presets: [], models: [], templates: [] })
     expect(index.rules.graphSemantics).toBe(ORG_SOP_L1_GRAPH_SEMANTICS)
     expect(index.rules.designMethod).toBe(ORG_SOP_DESIGN_METHOD)
+    expect(index.rules.patchContract).toBe(PATCH_CONTRACT_TEXT)
+    expect(index.rules.gateMarking).toBe(GATE_MARKING_SEMANTICS)
     expect(index.idConvention).toEqual(ID_CONVENTION)
   })
 

@@ -59,7 +59,7 @@ export interface OrgPlanPromptParams {
  * 为什么换注入点：规则文本的单一事实源在提示词常量层，但规划期与运行期都需要它——
  * 由 wf_org_catalog 返回既覆盖两个阶段，又不与工具返回重复占用上下文（用户裁决）。
  */
-export declare const ORG_RULES_SOURCE_NOTE = "\u7F16\u6392\u89C4\u5219\uFF08\u56FE\u8BED\u4E49\u4E0E\u8BBE\u8BA1\u65B9\u6CD5\uFF09\u7531 wf_org_catalog \u63D0\u4F9B\uFF1A\u4E0D\u4F20 ids \u8C03\u7528\u5B83\u5373\u53EF\u83B7\u5F97\u89C4\u5219\u5168\u6587\u4E0E\u8D44\u4EA7\u7D22\u5F15\uFF0C\u52A8\u7B14\u524D\u5148\u53D6\u3002";
+export declare const ORG_RULES_SOURCE_NOTE = "\u7F16\u6392\u89C4\u5219\uFF08\u56FE\u8BED\u4E49\u3001\u8BBE\u8BA1\u65B9\u6CD5\u4E0E\u5199\u56FE\u5951\u7EA6\uFF09\u7531 wf_org_catalog \u63D0\u4F9B\uFF1A\u4E0D\u4F20 ids \u8C03\u7528\u5B83\u5373\u53EF\u83B7\u5F97\u89C4\u5219\u5168\u6587\u4E0E\u8D44\u4EA7\u7D22\u5F15\uFF0C\u52A8\u7B14\u524D\u5148\u53D6\u3002";
 /**
  * 构建规划期父代理提示词（纯函数）。
  * @param params facts（目标种类/身份/语言）+ dynamic（用户意图/L3 SOP/预算文本）

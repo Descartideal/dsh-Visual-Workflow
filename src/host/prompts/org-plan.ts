@@ -112,7 +112,7 @@ function describeTarget(facts: OrgPlanPromptParams['facts']): { identity: string
  * 由 wf_org_catalog 返回既覆盖两个阶段，又不与工具返回重复占用上下文（用户裁决）。
  */
 export const ORG_RULES_SOURCE_NOTE =
-  '编排规则（图语义与设计方法）由 wf_org_catalog 提供：不传 ids 调用它即可获得规则全文与资产索引，动笔前先取。'
+  '编排规则（图语义、设计方法与写图契约）由 wf_org_catalog 提供：不传 ids 调用它即可获得规则全文与资产索引，动笔前先取。'
 
 /**
  * 提交前自检（末段动态状态之前；不新增工具调用，只固化「下游知道去哪读」这条契约）。

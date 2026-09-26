@@ -182,6 +182,7 @@ export function registerWfOrgCatalog(
     name: WF_ORG_CATALOG,
     description:
       'Read-only survey of the organization assets available for planning. Two call shapes: omit ids for the compact asset index (tool combos with their tool lists, official presets, provider/model plus reasoning-effort options, the orchestration rules, the role-template index, the workflow-template index, and the id convention); pass ids to recall details for those assets in one batch. '
+      + 'The index rules carry the write-patch contract: rules.patchContract (op field shapes, role-node data fields, submission rules, error-code semantics) and rules.gateMarking (milestone-gate marking rules) — read them before calling wf_graph_patch. '
       + 'Supported ids: tpl-* (workflow template → complete skeleton: stage nodes, roles, groups, lines and data-node bodies), role-* (role template → full systemPrompt plus its mapping fields), <tpl-id>#<node-id> (inline role inside that template → full systemPrompt). Bad or missing ids come back as per-item errors and never block the others. '
       + 'A node subagent\'s tools come ONLY from its presetId (a combo id from combos, or an official preset id), so picking presetId from this catalog is mandatory — an empty presetId means that node runs with zero tools. '
       + 'Role-node fields retryLimit / reactLimit / promptFilePath / injectSystemPrompt / injectToolSections are owned by the canvas UI: they are neither returned here nor settable through wf_graph_patch, so never pass them. '

@@ -27,7 +27,7 @@ export function metaLimitIssues(meta: OrgMeta, usage: OrgUsage): GraphIssue[] {
       code: META_LIMIT_EXCEEDED_CODE,
       level: 'error',
       message: `可执行节点数 ${usage.nodeCount} 超过元参数上限 ${nodeMax}`,
-      suggestion: `删减或合并可执行节点（agent/parent/group）至 ${nodeMax} 个以内；如需更大规模，请先以 set_meta 提高 nodeMax`,
+      suggestion: `删减或合并可执行节点（agent/parent/group）至 ${nodeMax} 个以内；如需更大规模，请让用户在画布或设置中调整元参数上限`,
     })
   }
   const groupMax = Number(meta.groupMax) || 0

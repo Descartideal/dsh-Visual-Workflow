@@ -17,28 +17,9 @@ import {
   stageLabel,
 } from '../../graph/index.js'
 import { WfError } from '../../orchestrator/index.js'
+import { OP_FIELD_SHAPES } from '../infrastructure/graph-op-contract.js'
 import type { GraphNode, Handle, Line, WorkflowDocument } from '../../shared/graph-model.js'
-import type { GraphPatchOp, GraphPatchResult, MarkPatchOp, MarkPatchResult } from './types.js'
-
-/**
- * 各图操作的「最小字段契约」（**单一事实源**）。
- *
- * 为什么放在这里而不是只写进工具描述（2026-09 实机取证）：
- *   模型写补丁时唯一能看到的事实源是工具 Schema，而 ops 是 `additionalProperties:true`
- *   的自由对象——描述里只举 create_node 一例时，模型对 connect 的端点字段只能猜
- *   （实测猜成 from/to，报「源节点不存在「」」）。契约文本同时供两处消费：
- *     ① wf_graph_patch 的 ops 描述（可发现性）；② 参数层错误消息（自我修正通道）。
- *   两处共用一份常量，避免文档与实现再次漂移。
- */
-export const OP_FIELD_SHAPES: Record<string, string> = {
-  create_node: "{ op:'create_node', node:{ kind:'agent'|'parent'|'start'|'end'|'pause'|'group'|'proxy'|'file'|'database', id?:string, data?:{...} } }（节点字段必须在 node 里，不能平铺到 op 顶层）",
-  remove_node: "{ op:'remove_node', nodeId:string, cascade?:boolean }",
-  update_node_data: "{ op:'update_node_data', nodeId:string, data:{...} }",
-  connect: "{ op:'connect', source:string, target:string, sourceHandle?:'flow-out'|'ctx-out'|'db-out', targetHandle?:'flow-in'|'ctx-in'|'db-in', condition?:{ type:'pass'|'fail'|'content', label?:string } }（端点字段名是 source/target；handle 省略时按流程通道补全 flow-out→flow-in）",
-  disconnect: "{ op:'disconnect', lineId:string } 或 { op:'disconnect', key:{ source,target,sourceHandle,targetHandle } }",
-  create_group: "{ op:'create_group', groupId:string, label:string, collabPrompt?:string, memberIds?:string[] }",
-  set_group_members: "{ op:'set_group_members', groupId:string, memberIds:string[] }（memberIds 必填，缺省不会清空成员）",
-}
+import type { GraphPatchOp, GraphPatchResult, MarkPatchOp, MarkPatchResult, PatchOpFailure } from './types.js'
 
 /**
  * 参数层错误（WF_BAD_ARGS）：字段没给对，**不是**图语义问题。
@@ -206,26 +187,7 @@ export function normalizeRoleNodeData(raw: unknown): Record<string, unknown> {
 }
 
 /**
- * 角色节点（agent / parent）的 data 字段契约文本（**单一事实源**；工具描述引用）。
- *
- * 为什么必须写进工具描述：ops 是自由对象，模型只能从描述推断节点 shape。
- * 2026.09 实机结论——不写契约时模型只会给 `{ label, systemPrompt }`，
- * 而 `presetId` 为空意味着该节点运行期**零工具**（resolveAgentTools 语义），
- * 且没有自动补全（补全只补形状，不会替模型组合）。
- */
-export const ROLE_NODE_DATA_CONTRACT =
-  "role nodes (kind='agent'|'parent') data fields: "
-  + "label (required), systemPrompt (required: the whole role/task spec for that subagent), "
-  + "presetId (required: use a combo id from catalog combos, or an official preset id from catalog presets — "
-  + 'an empty presetId gives that node ZERO tools at runtime), '
-  + 'provider + model (pick from catalog models; empty falls back to host default), '
-  + 'reasoning?, inputSchema? (what this node should receive), '
-  + 'outputSchema? (the structure of its final reply, which downstream ctx-linked nodes read verbatim). '
-  + 'Canvas-owned fields (retryLimit, reactLimit, promptFilePath, injectSystemPrompt, injectToolSections) '
-  + 'are not configurable through this tool: they are ignored on create and preserved on update.'
-
-/**
- * 应用 A 组图结构操作（按序，纯函数）。
+ * 应用图结构操作（按序，纯函数）。
  * 失败一律抛 WfError（稳定 code），调用方据此返回带修复建议的补丁错误。
  */
 export function applyGraphOps(input: {
@@ -513,6 +475,63 @@ export function applyGraphOps(input: {
     updatedNodeIds,
     connectedLineIds,
     disconnectedLineIds,
+  }
+}
+
+/**
+ * 容错应用：逐条复用严格应用器，失败的 op 记入 errors 并跳过，其余操作继续。
+ *
+ * 为什么容错（而不是遇到第一条就停）：ops 之间存在有序依赖，父代理最常见的失败模式是
+ * 一批里多条字段写错；一次只报一条会让它把同一批补丁反复重试，而失败清单一次列全后
+ * 可以一轮改完。
+ * 为什么逐条调用严格应用器：严格应用器在**内部副本**上推进，抛错时本层已成功的结果
+ * 分毫未动——失败 op 既不污染后续 op 的判定基础，也不需要回滚逻辑。
+ * 为什么只捕获 WfError：非 WfError 属于工具自身的缺陷，不能被伪装成「某条 op 写错了」。
+ * 语义前提：调用方在 errors 非空时**整批不落盘**，因此返回的结果仅供错误报告与后续 op
+ * 的判定基础使用。
+ */
+export function applyGraphOpsTolerant(input: {
+  doc: WorkflowDocument
+  ops: GraphPatchOp[]
+}): { result: GraphPatchResult; errors: PatchOpFailure[] } {
+  const errors: PatchOpFailure[] = []
+  const createdNodeIds: string[] = []
+  const removedNodeIds: string[] = []
+  const updatedNodeIds: string[] = []
+  const connectedLineIds: string[] = []
+  const disconnectedLineIds: string[] = []
+  let doc = input.doc
+  const ops = input.ops ?? []
+  for (let index = 0; index < ops.length; index += 1) {
+    const op = ops[index]
+    try {
+      const applied = applyGraphOps({ doc, ops: [op] })
+      doc = applied.doc as unknown as WorkflowDocument
+      createdNodeIds.push(...applied.createdNodeIds)
+      removedNodeIds.push(...applied.removedNodeIds)
+      updatedNodeIds.push(...applied.updatedNodeIds)
+      connectedLineIds.push(...applied.connectedLineIds)
+      disconnectedLineIds.push(...applied.disconnectedLineIds)
+    } catch (error) {
+      if (!(error instanceof WfError)) throw error
+      errors.push({
+        index,
+        op: String((op as { op?: unknown })?.op ?? ''),
+        code: String(error.code ?? ''),
+        message: error.message,
+      })
+    }
+  }
+  return {
+    result: {
+      doc: doc as unknown as GraphPatchResult['doc'],
+      createdNodeIds,
+      removedNodeIds,
+      updatedNodeIds,
+      connectedLineIds,
+      disconnectedLineIds,
+    },
+    errors,
   }
 }
 

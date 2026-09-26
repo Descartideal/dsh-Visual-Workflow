@@ -1,7 +1,7 @@
 import { hasBlockingIssues } from '../../graph/index.js';
 import { type PatchScope } from './types.js';
 import type { GraphNode, Line, WorkflowDocument, WorkflowTemplate } from '../../shared/graph-model.js';
-import type { OrgMeta } from '../../shared/types.js';
+import type { OrgBudget } from '../../shared/types.js';
 import type { MilestoneMarkResult, MilestoneRunFacts, RunEntry } from '../../orchestrator/index.js';
 /** 工具层所需宿主能力（宿主 service 的最小结构适配；单测 fake）。 */
 export interface GraphPatchHost {
@@ -24,7 +24,16 @@ export interface GraphPatchHost {
         }): Promise<WorkflowDocument>;
         getRun(runId: string): Promise<unknown>;
         listRuns(flowId: string): Promise<unknown[]>;
+        /** 工具组合清单：节点 presetId 的取值来源之一（存在性校验用）。 */
+        listToolCombos(): Promise<unknown[]>;
     };
+    /**
+     * agent preset 目录（presetId 的另一取值来源）。
+     * 属 best-effort 生态缝：缺失或枚举失败时该来源不参与存在性判定。
+     */
+    listPresets?: () => Promise<Array<{
+        id?: unknown;
+    }>>;
     /** 编排运行时能力（mark_node 路径 + 事实源刷新 + 空闲基准）。 */
     orchestrator: {
         activeRunForSession(sessionId: string): RunEntry | null;
@@ -61,20 +70,25 @@ export interface GraphPatchToolResult {
     targetId: string;
     revision: number;
     applied: number;
+    /**
+     * 只读预算：生效元参数上限 + 当前规模 → 剩余量。
+     * 为什么进返回体：元参数对改图方是硬护栏且**不可自行调整**，父代理需要立刻看到
+     * 「还剩多少规模」，否则只能靠撞护栏报错来试出边界。
+     */
+    budget: OrgBudget;
     warnings: Array<{
         code: string;
         message: string;
     }>;
     /** true = 本次补丁新建了模板（scope=template + create）；targetId 即新模板 id。 */
     newTemplate?: boolean;
-    /** mark_node 后本 run 已完成的闸门次数（D-21：不含首次编排）。 */
+    /** mark_node 后本 run 已完成的闸门次数（不含首次编排）。 */
     milestoneUsed?: number;
     created?: string[];
     removed?: string[];
     updated?: string[];
     connected?: string[];
     disconnected?: string[];
-    meta?: OrgMeta;
     marked?: {
         nodeId: string;
         status: 'ok' | 'fail';
@@ -86,7 +100,6 @@ export declare function executeGraphPatch(host: GraphPatchHost, sessionId: strin
     scope?: unknown;
     targetId?: unknown;
     ops?: unknown;
-    origin?: unknown;
     expectRevision?: unknown;
     create?: unknown;
 }): Promise<GraphPatchToolResult>;

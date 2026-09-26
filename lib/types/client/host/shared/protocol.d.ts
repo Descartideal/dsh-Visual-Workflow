@@ -118,9 +118,9 @@ export declare const WF_ASK = "wf_ask";
 export declare const WF_ASK_AGENT = "wf_ask_agent";
 /** 单工具三模式数据访问工具名（search/query/schema，有 db-in 连线时注入）。 */
 export declare const WF_DB_QUERY = "wf_db_query";
-/** 父代理自主编排的只读勘察工具名（角色模板/组合/工具开关/preset/数据源/模板库 + 元参数预算）。 */
+/** 父代理自主编排的只读勘察工具名（编排规则 / 角色模板 / 组合 / preset / 模型 / 工作流模板，按需召回详情）。 */
 export declare const WF_ORG_CATALOG = "wf_org_catalog";
-/** 父代理自主编排的写图工具名（三分区：图结构 / 元参数 / 运行状态标记）。 */
+/** 父代理自主编排的写图工具名（两组：图结构 / 运行状态标记）。 */
 export declare const WF_GRAPH_PATCH = "wf_graph_patch";
 /** 父代理（主会话 Agent）可见工具集：wf_run_node / wf_run_node_wait、wf_finish、wf_ask_agent。 */
 export declare const PARENT_AGENT_VISIBLE_TOOLS: readonly ["wf_run_node", "wf_run_node_wait", "wf_finish", "wf_ask_agent"];
