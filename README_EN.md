@@ -171,7 +171,7 @@ Card layout (**3 inputs on the left, 2 outputs on the right**):
 
 - Drag multiple role nodes into a collaboration group; roles within the group start in parallel (only context/database edges are retained for members)
 - A collaboration prompt is appended to each member's first user message, automatically listing all member IDs and role names
-- Agents within the group communicate via `wf_ask_agent` (blocking) and interact with the user via `wf_ask`
+- Agents within the group communicate asynchronously via `wf_ask_agent` (non-blocking) and interact with the user via `wf_ask`
 - The group card has a left flow input and a right flow output; member nodes support cross-group context/database edges
 - The card is resizable (8-direction handles); internal member list is scrollable
 
@@ -203,7 +203,7 @@ Agents autonomously schedule using the following tools (guardrails and persisten
 | **`wf_run_node`** | `nodeId` – node ID<br>`thinking?` – reasoning effort<br>`iterationLimit?` – ReAct iteration cap<br>`retryLimit?` – retry cap | Asynchronously starts the node sub-agent, immediately returns `started`; if a pause node, returns `paused` and persists checkpoint. |
 | **`wf_run_node_wait`** | `nodeId` – node ID<br>`thinking?` – reasoning effort<br>`iterationLimit?` – ReAct iteration cap<br>`retryLimit?` – retry cap | Blocks until the node completes; returns `ok/fail` along with the final output. |
 | **`wf_ask`** | `questions[]` – list of questions (multiple allowed)<br>`options?` – optional configurations<br>`multi_select?` – allow multi-select | Asks the user a question, rendering the official question card; blocks until the user responds. |
-| **`wf_ask_agent`** | `cmd: ask/reply/resolve` – command type<br>`targetChildId` – target agent ID<br>`message?` – message content<br>`askId?` – ask ID (for reply/resolution) | Blocking inter-agent communication: `ask` initiates a question and suspends; `reply` replies directly; `resolve` allows the parent agent to perform timeout resolution (continue/retry/terminate). |
+| **`wf_ask_agent`** | `cmd: ask/reply` – command type<br>`targetChildId` – target agent ID<br>`message?` – message content<br>`askId?` – ask ID (for reply) | Non-blocking inter-agent communication: `ask` delivers a message and immediately returns a receipt with an `askId`; `reply` answers an ask and the reply is delivered back to the asker as a new message (arriving in a later turn). |
 | **`wf_db_query`** | `dataId` – data node ID<br>`mode: search/query/schema` – query mode<br>`query?/sql?` – query statement<br>`topK?` – number of results | Read-only database access: vector retrieval, structured queries (SELECT only), table schema inspection. |
 | **`wf_finish`** | `status?` – completion status (completed/failed)<br>`summary?` – summary message | Finalizes the workflow, marking completion or failure, and releases the run lock (idempotent). |
 

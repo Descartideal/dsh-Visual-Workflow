@@ -38,7 +38,7 @@ export interface RunEntry {
   lastActiveAt: number
   /** 阻塞等待表：`${runId}:${nodeId}` → waiter（wait:true 路径）。 */
   waiters: Map<string, Waiter>
-  /** 挂起协作通信表：askId → PendingAsk（wf_ask_agent 路径）。 */
+  /** 待回复登记表：askId → PendingAsk（wf_ask_agent 路径；非阻塞，仅归属校验 + 审计）。 */
   asks: Map<string, PendingAsk>
   /**
    * 执行者模式：父代理节点 id（父代理被流程线连接，作为执行单元先执行自身任务）。

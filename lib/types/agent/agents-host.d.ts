@@ -15,10 +15,10 @@ export declare class CordisAgentHost implements AgentHost {
     /**
      * 会话根 Agent 在 afterMs 之后的最新 turn/end（无则 null）。
      *
-     * 【官方词表取证】dsh-session 的 `TurnEndReasonMap`（merge-extensible）含 7 种 kind：
+     * dsh-session 的 `TurnEndReasonMap`（merge-extensible）含 7 种 kind：
      * `completed` / `aborted`（带 cancel cause）/ `blocked` / `error`（结构化 LlmFailure）/
      * `max-tokens` / `interrupted`（崩溃孤儿回合事后收口）/ `forked`（fork 种子构造收口）。
-     * 本适配的终态翻译口径（用户裁决 2026.10）：
+     * 本适配的终态翻译口径：
      *   - `error` → 编排已死（模型/工具/官方内部错误）→ 运行 failed；
      *   - `blocked` → pre-step 被拒绝，父代理回合停住且不会自行恢复 → 同样按编排已死
      *     处理（运行 failed）。若不纳入，运行只能等空闲看护（默认 30 分钟）超时收敛；
@@ -28,7 +28,7 @@ export declare class CordisAgentHost implements AgentHost {
      *     被截断、父代理仍可继续；interrupted/forked 只出现在冷读与 fork 种子，运行中
      *     看护不应据此判定。未知 kind 一律保守返回 null（官方可扩展，不得因未知而误判）。
      * 若将来需要把 max-tokens 也纳入终态判定，属编排语义变更：必须同时改
-     * TurnEndInfo 契约、看护分支与测试（见同目录 AGENTS.md § 依赖边界：适配必须取证可追溯）。
+     * TurnEndInfo 契约、看护分支与测试（适配必须取证可追溯）。
      */
     latestTurnEnd(sessionId: string, afterMs: number): TurnEndInfo | null;
     /**

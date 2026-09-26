@@ -2,7 +2,7 @@ import { type AskAgentArgs, type AskAgentDelivery, type AskAgentResult } from '.
 import { type CallerInfo } from './seams.js';
 import { RuntimeExecute } from './runtime-execute.js';
 export declare class RuntimeComm extends RuntimeExecute {
-    /** 校验调用者会话存在运行且 running（ask/reply/resolve 共用；子代理不在此拒绝）。 */
+    /** 校验调用者会话存在运行且 running（ask/reply 共用；子代理不在此拒绝）。 */
     private requireRunningRun;
     /**
      * 节点 id → 本 run 的子代理会话 id 反查（协作成员稳定寻址，O(1)，P2-4）。
@@ -19,19 +19,21 @@ export declare class RuntimeComm extends RuntimeExecute {
      */
     private targetUnknownHint;
     /**
-     * wf_ask_agent：Agent 间阻塞通信（ask/reply/resolve 三态协议）。
-     *   - ask：子代理 A 向同运行节点子代理 B 发起协作消息并阻塞等待回复；
+     * wf_ask_agent：Agent 间协作通信（ask/reply 两态协议，非阻塞）。
+     *   - ask：子代理 A 向同运行节点子代理 B 投递协作消息并登记待回复，
+     *     随即返回受理凭证（{cmd:'ask', askId, from, to}）；A 不挂起、继续执行；
      *     投递经 delivery 缝（在线 steer 插队 / 冷态 followup 冷恢复）；
-     *   - reply：目标 B 回复，解除 A 的阻塞（工具结果 = 回复文本）；
-     *   - resolve：父代理对超时 ask 裁决（continue 重启计时 / resend 重发 / abort
-     *     让 A 以超时错误继续）。
+     *   - reply：目标 B 答复，回复文本经同一投递缝反向投递给发起者 A
+     *     （作为新消息抵达，由 A 的后续回合处理）；
      * 强校验（越权拒绝）：运行锁 + childIndex 表内所有权 + 会话归属，全程写审计日志。
-     * 超时后 A 仍挂起，等待父代理裁决；运行终止/插件卸载时全部挂起 ask 以
-     * WF_CANCELLED 释放。
+     * 待回复登记按 TTL 惰性清理：到期记录在下次调用时被移除，其 askId 不再接受 reply。
      */
     wfAskAgent(caller: CallerInfo, childId: string, args: AskAgentArgs, delivery: AskAgentDelivery, callerSignal?: AbortSignal): Promise<AskAgentResult>;
-    /** 协作通信超时：置 timed-out 并把超时详情通知父代理（A 继续挂起等裁决）。 */
-    private onAskTimeout;
+    /**
+     * TTL 惰性清理过期待回复登记（无定时器；ask 不挂起故无可裁决的受体）。
+     * 到期记录静默移除：其 askId 不再接受 reply，审计由宿主日志承载。
+     */
+    private sweepExpiredAsks;
     /** 写协作通信审计：内存审计链 + 宿主日志（越权校验的可追溯性）。 */
     private auditAsk;
 }

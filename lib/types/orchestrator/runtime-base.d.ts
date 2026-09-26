@@ -220,8 +220,11 @@ export declare abstract class RuntimeBase {
     dispose(): void;
     /** 拒绝某运行的全部阻塞等待器（终止/卸载路径）。 */
     protected rejectWaiters(entry: RunEntry): void;
-    /** 拒绝某运行的全部挂起协作通信（终止/卸载路径：清计时器 + reject + 清表）。 */
-    protected rejectAsks(entry: RunEntry, error?: unknown): void;
+    /**
+     * 释放某运行的全部待回复协作登记（终止/替换/卸载路径）。
+     * 非阻塞协议下登记不含等待受体，故无拒绝语义：仅清表 + 写审计（幂等）。
+     */
+    protected rejectAsks(entry: RunEntry): void;
     /** 持久化 run 快照（尽力而为：失败仅告警，不阻断状态机）。 */
     protected persistWarn(entry: RunEntry): Promise<void>;
 }

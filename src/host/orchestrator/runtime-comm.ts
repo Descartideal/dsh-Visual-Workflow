@@ -1,20 +1,20 @@
 // src/host/orchestrator/runtime-comm.ts
 //
 // 编排运行时协作通信层（RuntimeComm extends RuntimeExecute）：wf_ask_agent
-// 三态协议（ask/reply/resolve）+ 超时裁决与审计。方法体逐字移动。
+// 两态协议（ask/reply）+ 待回复登记与审计。ask 不挂起调用方（非阻塞），
+// reply 反向投递回复到发起者。
 
 import { randomUUID } from 'node:crypto'
 import {
   ASK_MESSAGE_LIMIT,
   buildAskText,
-  buildTimeoutText,
+  buildReplyText,
   coordinatorMessage,
   type AskAgentArgs,
   type AskAgentCmd,
   type AskAgentDelivery,
   type AskAgentResult,
   type PendingAsk,
-  type ResolveAction,
 } from './ask-protocol.js'
 import { statusText, truncateText } from './snapshot.js'
 import { WfError, messageOf } from './errors.js'
@@ -26,7 +26,7 @@ import { RuntimeExecute } from './runtime-execute.js'
 export class RuntimeComm extends RuntimeExecute {
   // ---- wf_ask_agent ----------------------------------------------------------
 
-  /** 校验调用者会话存在运行且 running（ask/reply/resolve 共用；子代理不在此拒绝）。 */
+  /** 校验调用者会话存在运行且 running（ask/reply 共用；子代理不在此拒绝）。 */
   private requireRunningRun(caller: CallerInfo): RunEntry {
     const sessionId = caller.sessionId
     if (!sessionId) throw new WfError('无法识别调用者会话', 'WF_BAD_CALLER')
@@ -89,15 +89,14 @@ export class RuntimeComm extends RuntimeExecute {
   }
 
   /**
-   * wf_ask_agent：Agent 间阻塞通信（ask/reply/resolve 三态协议）。
-   *   - ask：子代理 A 向同运行节点子代理 B 发起协作消息并阻塞等待回复；
+   * wf_ask_agent：Agent 间协作通信（ask/reply 两态协议，非阻塞）。
+   *   - ask：子代理 A 向同运行节点子代理 B 投递协作消息并登记待回复，
+   *     随即返回受理凭证（{cmd:'ask', askId, from, to}）；A 不挂起、继续执行；
    *     投递经 delivery 缝（在线 steer 插队 / 冷态 followup 冷恢复）；
-   *   - reply：目标 B 回复，解除 A 的阻塞（工具结果 = 回复文本）；
-   *   - resolve：父代理对超时 ask 裁决（continue 重启计时 / resend 重发 / abort
-   *     让 A 以超时错误继续）。
+   *   - reply：目标 B 答复，回复文本经同一投递缝反向投递给发起者 A
+   *     （作为新消息抵达，由 A 的后续回合处理）；
    * 强校验（越权拒绝）：运行锁 + childIndex 表内所有权 + 会话归属，全程写审计日志。
-   * 超时后 A 仍挂起，等待父代理裁决；运行终止/插件卸载时全部挂起 ask 以
-   * WF_CANCELLED 释放。
+   * 待回复登记按 TTL 惰性清理：到期记录在下次调用时被移除，其 askId 不再接受 reply。
    */
   async wfAskAgent(
     caller: CallerInfo,
@@ -107,15 +106,17 @@ export class RuntimeComm extends RuntimeExecute {
     callerSignal?: AbortSignal,
   ): Promise<AskAgentResult> {
     const cmd = String(args?.cmd ?? '').trim() as AskAgentCmd
-    if (cmd !== 'ask' && cmd !== 'reply' && cmd !== 'resolve') {
-      throw new WfError('wf_ask_agent 需要 cmd: "ask" | "reply" | "resolve"', 'WF_BAD_ARGS')
+    if (cmd !== 'ask' && cmd !== 'reply') {
+      throw new WfError('wf_ask_agent 需要 cmd: "ask" | "reply"', 'WF_BAD_ARGS')
     }
     const run = this.requireRunningRun(caller)
+    // TTL 惰性清理：无定时器，只在通信调用进入时按时间戳收割过期登记。
+    this.sweepExpiredAsks(run)
 
-    // ---- ask：发起协作消息并挂起等待回复 ----
+    // ---- ask：投递协作消息并登记待回复（不挂起调用方） ----
     if (cmd === 'ask') {
       if (!caller.isChild) {
-        throw new WfError('wf_ask_agent 的 ask 仅供子代理使用（父代理请用 resolve 处理超时）', 'WF_NOT_CHILD')
+        throw new WfError('wf_ask_agent 的 ask 仅供子代理使用', 'WF_NOT_CHILD')
       }
       const from = childId
       const metaFrom = from ? this.childIndex.get(from) : null
@@ -162,19 +163,8 @@ export class RuntimeComm extends RuntimeExecute {
       if (to === from) throw new WfError('不能向自己发起协作通信', 'WF_BAD_ARGS')
       const message = String(args?.message ?? '').trim()
       if (!message) throw new WfError('wf_ask_agent ask 需要 message', 'WF_BAD_ARGS')
-      for (const existing of run.asks.values()) {
-        if (existing.from === from && existing.state === 'pending') {
-          throw new WfError('已有挂起的协作通信等待回复，请先处理', 'WF_BUSY')
-        }
-      }
-      const timeoutMs = Math.max(1, this.deps.config.wfAskAgentTimeoutMs)
+      const ttlMs = Math.max(1, this.deps.config.wfAskAgentTimeoutMs)
       const askId = this.deps.uuid?.() ?? randomUUID()
-      let askResolve!: (result: AskAgentResult) => void
-      let askReject!: (error: unknown) => void
-      const promise = new Promise<AskAgentResult>((res, rej) => {
-        askResolve = res
-        askReject = rej
-      })
       const pending: PendingAsk = {
         askId,
         from,
@@ -182,15 +172,9 @@ export class RuntimeComm extends RuntimeExecute {
         fromNodeId: metaFrom.nodeId,
         toNodeId: metaTo.nodeId,
         message: truncateText(message, ASK_MESSAGE_LIMIT),
-        timeoutMs,
-        expiresAt: this.now() + timeoutMs,
-        state: 'pending',
+        ttlMs,
+        expiresAt: this.now() + ttlMs,
         audit: [],
-        promise,
-        resolve: askResolve,
-        reject: askReject,
-        timer: null,
-        delivery,
       }
       run.asks.set(askId, pending)
       this.auditAsk(pending, 'ask', `from=${from}(${metaFrom.nodeId}) to=${to}(${metaTo.nodeId})`)
@@ -199,122 +183,65 @@ export class RuntimeComm extends RuntimeExecute {
           sessionId: run.snapshot.sessionId,
           to,
           message: coordinatorMessage(this.deps.uuid?.() ?? randomUUID(), buildAskText(pending), from),
-          signal: run.controller.signal,
+          signal: callerSignal ?? run.controller.signal,
         })
         this.auditAsk(pending, 'deliver', `to=${to}`)
       } catch (error) {
+        // 投递失败：撤销登记（避免留下永不投递的待回复记录），业务失败显式上抛。
         run.asks.delete(askId)
         this.auditAsk(pending, 'deliver-failed', messageOf(error))
         throw new WfError(`协作消息投递失败：${messageOf(error)}`, 'WF_DELIVERY_FAILED')
       }
-      pending.expiresAt = this.now() + timeoutMs
-      pending.timer = setTimeout(() => this.onAskTimeout(run, askId), timeoutMs)
       run.lastActiveAt = this.now()
-
-      // 挂起：等待回复 / 超时裁决 / 运行终止 / 调用方取消
-      const onAbort = (): void => {
-        run.asks.delete(askId)
-        if (pending.timer) clearTimeout(pending.timer)
-        pending.reject(new WfError('该工作流已停止', 'WF_CANCELLED'))
-      }
-      if (callerSignal && !callerSignal.aborted) callerSignal.addEventListener('abort', onAbort, { once: true })
-      else if (callerSignal?.aborted) onAbort()
-      try {
-        return await pending.promise
-      } finally {
-        callerSignal?.removeEventListener('abort', onAbort)
-      }
+      return { cmd: 'ask', askId, from, to }
     }
 
-    // ---- reply：目标回复，解除发起者阻塞 ----
-    if (cmd === 'reply') {
-      if (!caller.isChild) {
-        throw new WfError('wf_ask_agent 的 reply 仅供子代理使用', 'WF_NOT_CHILD')
-      }
-      const askId = String(args?.askId ?? '').trim()
-      if (!askId) throw new WfError('wf_ask_agent reply 需要 askId', 'WF_BAD_ARGS')
-      const pending = run.asks.get(askId)
-      if (!pending) throw new WfError('协作通信不存在或已结束', 'WF_ASK_NOT_FOUND')
-      if (pending.to !== childId) throw new WfError('只有消息目标可以回复该协作通信', 'WF_ASK_MISMATCH')
-      if (pending.state !== 'pending') throw new WfError('该协作通信已超时，等待父代理裁决', 'WF_ASK_NOT_PENDING')
-      const target = String(args?.targetChildId ?? '').trim()
-      // 发起者可用「子代理会话 id」或「节点 id」任一形式回复（ask 消息文本中两值均含）
-      if (target && target !== pending.from && target !== pending.fromNodeId) {
-        throw new WfError('回复对象与发起者不一致', 'WF_ASK_MISMATCH')
-      }
-      const message = String(args?.message ?? '').trim()
-      if (!message) throw new WfError('wf_ask_agent reply 需要 message', 'WF_BAD_ARGS')
-      if (pending.timer) clearTimeout(pending.timer)
-      pending.timer = null
-      pending.state = 'resolved'
-      this.auditAsk(pending, 'reply', `from=${childId}`)
-      pending.resolve({ cmd: 'ask', askId, from: pending.from, to: pending.to, reply: message })
-      run.asks.delete(askId)
-      return { cmd: 'reply', askId, from: childId, to: pending.from }
-    }
-
-    // ---- resolve：父代理对超时 ask 裁决 ----
-    if (caller.isChild) {
-      throw new WfError('wf_ask_agent 的 resolve 仅供父代理使用（子代理请用 reply）', 'WF_NOT_ROOT')
+    // ---- reply：目标答复，反向投递回复到发起者 ----
+    if (!caller.isChild) {
+      throw new WfError('wf_ask_agent 的 reply 仅供子代理使用', 'WF_NOT_CHILD')
     }
     const askId = String(args?.askId ?? '').trim()
-    if (!askId) throw new WfError('wf_ask_agent resolve 需要 askId', 'WF_BAD_ARGS')
+    if (!askId) throw new WfError('wf_ask_agent reply 需要 askId', 'WF_BAD_ARGS')
     const pending = run.asks.get(askId)
     if (!pending) throw new WfError('协作通信不存在或已结束', 'WF_ASK_NOT_FOUND')
-    if (pending.state !== 'timed-out') {
-      throw new WfError('该协作通信尚未超时，无需裁决', 'WF_ASK_NOT_TIMED_OUT')
+    if (pending.to !== childId) throw new WfError('只有消息目标可以回复该协作通信', 'WF_ASK_MISMATCH')
+    const target = String(args?.targetChildId ?? '').trim()
+    // 发起者可用「子代理会话 id」或「节点 id」任一形式回复（ask 消息文本中两值均含）
+    if (target && target !== pending.from && target !== pending.fromNodeId) {
+      throw new WfError('回复对象与发起者不一致', 'WF_ASK_MISMATCH')
     }
-    const action = String(args?.action ?? '').trim() as ResolveAction
-    if (action !== 'continue' && action !== 'resend' && action !== 'abort') {
-      throw new WfError('wf_ask_agent resolve 需要 action: "continue" | "resend" | "abort"', 'WF_BAD_ARGS')
+    const message = String(args?.message ?? '').trim()
+    if (!message) throw new WfError('wf_ask_agent reply 需要 message', 'WF_BAD_ARGS')
+    this.auditAsk(pending, 'reply', `from=${childId}`)
+    try {
+      await delivery.deliver({
+        sessionId: run.snapshot.sessionId,
+        to: pending.from,
+        message: coordinatorMessage(this.deps.uuid?.() ?? randomUUID(), buildReplyText(pending, message), childId),
+        signal: callerSignal ?? run.controller.signal,
+      })
+      this.auditAsk(pending, 'reply-deliver', `to=${pending.from}`)
+    } catch (error) {
+      // 回复未送达：保留登记，允许回复方重试；业务失败显式上抛。
+      this.auditAsk(pending, 'reply-deliver-failed', messageOf(error))
+      throw new WfError(`协作回复投递失败：${messageOf(error)}`, 'WF_DELIVERY_FAILED')
     }
-    if (action === 'abort') {
-      pending.state = 'aborted'
-      this.auditAsk(pending, 'resolve-abort', '')
-      if (pending.timer) clearTimeout(pending.timer)
-      pending.reject(new WfError('协作通信超时未获回复，已由父代理终止', 'WF_ASK_AGENT_TIMEOUT', { askId }))
-      run.asks.delete(askId)
-      return { cmd: 'resolve', askId, action }
-    }
-    if (action === 'resend') {
-      try {
-        await pending.delivery.deliver({
-          sessionId: run.snapshot.sessionId,
-          to: pending.to,
-          message: coordinatorMessage(this.deps.uuid?.() ?? randomUUID(), buildAskText(pending), pending.from),
-          signal: run.controller.signal,
-        })
-        this.auditAsk(pending, 'resolve-resend', `to=${pending.to}`)
-      } catch (error) {
-        pending.state = 'aborted'
-        this.auditAsk(pending, 'deliver-failed', messageOf(error))
-        pending.reject(new WfError(`协作消息重发失败：${messageOf(error)}`, 'WF_DELIVERY_FAILED'))
-        run.asks.delete(askId)
-        return { cmd: 'resolve', askId, action }
-      }
-    } else {
-      this.auditAsk(pending, 'resolve-continue', '')
-    }
-    pending.state = 'pending'
-    pending.expiresAt = this.now() + pending.timeoutMs
-    pending.timer = setTimeout(() => this.onAskTimeout(run, askId), pending.timeoutMs)
-    return { cmd: 'resolve', askId, action }
+    // 回复已送达才释放登记：既允许送达失败后重试，又不再接受该 askId 的重复回复。
+    run.asks.delete(askId)
+    run.lastActiveAt = this.now()
+    return { cmd: 'reply', askId, from: childId, to: pending.from }
   }
 
-  /** 协作通信超时：置 timed-out 并把超时详情通知父代理（A 继续挂起等裁决）。 */
-  private onAskTimeout(entry: RunEntry, askId: string): void {
-    const pending = entry.asks.get(askId)
-    if (!pending || pending.state !== 'pending') return
-    pending.state = 'timed-out'
-    pending.timer = null
-    this.auditAsk(pending, 'timeout', `timeoutMs=${pending.timeoutMs}`)
-    try {
-      pending.delivery.notifyParent({
-        sessionId: entry.snapshot.sessionId,
-        message: coordinatorMessage(this.deps.uuid?.() ?? randomUUID(), buildTimeoutText(pending), 'visual-workflow'),
-      })
-    } catch (error) {
-      this.log().warn(`[visual-workflow] wf_ask_agent 超时通知父代理失败：${messageOf(error)}`)
+  /**
+   * TTL 惰性清理过期待回复登记（无定时器；ask 不挂起故无可裁决的受体）。
+   * 到期记录静默移除：其 askId 不再接受 reply，审计由宿主日志承载。
+   */
+  private sweepExpiredAsks(entry: RunEntry): void {
+    const now = this.now()
+    for (const [askId, pending] of entry.asks) {
+      if (pending.expiresAt > now) continue
+      entry.asks.delete(askId)
+      this.log().info(`[visual-workflow] wf_ask_agent audit: askId=${askId} ttl-expired ttlMs=${pending.ttlMs}`)
     }
   }
 

@@ -84,8 +84,6 @@ export declare const ORCH_HARD_CONSTRAINTS: {
     readonly failureSemantics: "绝不静默跳过失败节点";
     /** 条件连线语义：条件分支由父代理按上游实际产出语义判断。 */
     readonly conditionSemantics: "条件分支由你依据上游节点的实际产出进行语义判断";
-    /** 协作通信超时处置：征询用户后 resolve 三动作。 */
-    readonly askAgentTimeout: "若收到 wf_ask_agent 超时通知，先征询用户，再用该工具定案(continue / resend / abort)";
     /** 情况2 执行者模式核心短语：你本人也是执行节点，先执行自身任务再调度。 */
     readonly executorRole: "执行+编排：你既是执行节点，也要负责调度子代理；你只执行指向自身的节点任务";
 };

@@ -171,7 +171,7 @@
 
 - 将多个角色节点拖入协作组，组内角色并行启动（组内角色仅保留上下文/数据库连线）
 - 协作 Prompt 追加到每个成员的首条用户消息末尾，并自动列出所有成员的 ID 与角色名称
-- 组内 Agent 通过 `wf_ask_agent` 阻塞通信、通过 `wf_ask` 向用户交流提问
+- 组内 Agent 通过 `wf_ask_agent` 异步通信（不阻塞发起者）、通过 `wf_ask` 向用户交流提问
 - 组卡片左入流程、右出流程；组内成员节点支持跨组上下文/数据库连线
 - 卡片支持拉伸（八方向），内部成员列表可滚动
 
@@ -203,7 +203,7 @@
 | **`wf_run_node`** | `nodeId` – 节点ID<br>`thinking?` – 思考强度<br>`iterationLimit?` – ReAct 迭代上限<br>`retryLimit?` – 回流重试上限 | 异步启动节点子代理，立即返回 `started`；若为暂停节点则返回 `paused` 并持久化断点。 |
 | **`wf_run_node_wait`** | `nodeId` – 节点ID<br>`thinking?` – 思考强度<br>`iterationLimit?` – ReAct 迭代上限<br>`retryLimit?` – 回流重试上限 | 阻塞等待节点执行完成，返回 `ok/fail` 及最终输出。 |
 | **`wf_ask`** | `questions[]` – 问题列表（支持多问）<br>`options?` – 可选项配置<br>`multi_select?` – 是否允许多选 | 向用户提问，渲染官方提问卡片，阻塞等待用户回答。 |
-| **`wf_ask_agent`** | `cmd: ask/reply/resolve` – 命令类型<br>`targetChildId` – 目标代理ID<br>`message?` – 消息内容<br>`askId?` – 提问ID（用于回复/裁决） | Agent间阻塞通信：`ask` 发起提问并挂起，`reply` 定向回复，`resolve` 由父代理进行超时裁决（继续/重发/终止）。 |
+| **`wf_ask_agent`** | `cmd: ask/reply` – 命令类型<br>`targetChildId` – 目标代理ID<br>`message?` – 消息内容<br>`askId?` – 提问ID（用于回复） | Agent间异步通信（不阻塞）：`ask` 投递消息并立即返回受理凭证（含 `askId`），`reply` 定向回复并把回复作为新消息投递回发起者（在其后续回合抵达）。 |
 | **`wf_db_query`** | `dataId` – 数据节点ID<br>`mode: search/query/schema` – 查询模式<br>`query?/sql?` – 查询语句<br>`topK?` – 返回条数 | 数据库只读访问：向量检索、结构化查询（仅 SELECT）、查看表结构。 |
 | **`wf_finish`** | `status?` – 完成状态（completed/failed）<br>`summary?` – 总结信息 | 工作流收尾，标记完成或失败，释放运行锁（幂等）。 |
 

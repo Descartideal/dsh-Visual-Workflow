@@ -10,12 +10,11 @@ import type { FlowStore } from '../storage/flow-store.js'
 import type { AgentsServiceLike, SubagentsServiceLike } from './runner.js'
 
 // ---------------------------------------------------------------------------
-// 会话事件流读取（DSH 0.1.2 适配，A4-03/A4-04）
+// 会话事件流读取
 // ---------------------------------------------------------------------------
-// rc.2 时代插件直读 root.session.events（数组）；0.1.2 移除该 getter，改为按需
-// `seq` / `eventAt()` / `snapshotEvents()`（SessionSeq/SessionLogOffset 为 branded
-// number，运行时仍是普通非负整数）。官方类型已取证：`session.seq` 为当前长度、
-// `eventAt(seq)` 取单个事件。这里用运行时守卫兼容双版本，避免零官方类型依赖被打破。
+// 事件流访问形态：seq（当前日志长度）/ eventAt(seq) 取单个事件 / events 数组。
+// SessionSeq/SessionLogOffset 为 branded number，运行时仍是普通非负整数。
+// 运行时守卫兼容双版本形态，避免零官方类型依赖被打破。
 
 /** 会话事件倒序扫描上限（只关心最新若干条；防止极端长日志全量物化）。 */
 const SESSION_EVENT_LOOKBACK = 200
@@ -107,10 +106,10 @@ export class CordisAgentHost implements AgentHost {
   /**
    * 会话根 Agent 在 afterMs 之后的最新 turn/end（无则 null）。
    *
-   * 【官方词表取证】dsh-session 的 `TurnEndReasonMap`（merge-extensible）含 7 种 kind：
+   * dsh-session 的 `TurnEndReasonMap`（merge-extensible）含 7 种 kind：
    * `completed` / `aborted`（带 cancel cause）/ `blocked` / `error`（结构化 LlmFailure）/
    * `max-tokens` / `interrupted`（崩溃孤儿回合事后收口）/ `forked`（fork 种子构造收口）。
-   * 本适配的终态翻译口径（用户裁决 2026.10）：
+   * 本适配的终态翻译口径：
    *   - `error` → 编排已死（模型/工具/官方内部错误）→ 运行 failed；
    *   - `blocked` → pre-step 被拒绝，父代理回合停住且不会自行恢复 → 同样按编排已死
    *     处理（运行 failed）。若不纳入，运行只能等空闲看护（默认 30 分钟）超时收敛；
@@ -120,7 +119,7 @@ export class CordisAgentHost implements AgentHost {
    *     被截断、父代理仍可继续；interrupted/forked 只出现在冷读与 fork 种子，运行中
    *     看护不应据此判定。未知 kind 一律保守返回 null（官方可扩展，不得因未知而误判）。
    * 若将来需要把 max-tokens 也纳入终态判定，属编排语义变更：必须同时改
-   * TurnEndInfo 契约、看护分支与测试（见同目录 AGENTS.md § 依赖边界：适配必须取证可追溯）。
+   * TurnEndInfo 契约、看护分支与测试（适配必须取证可追溯）。
    */
   latestTurnEnd(sessionId: string, afterMs: number): TurnEndInfo | null {
     const root = this.getRootAgent(sessionId)
@@ -233,9 +232,9 @@ export function subagentsServiceLike(ctx: Context): SubagentsServiceLike | null 
     && typeof (service as { startContinuable?: unknown }).startContinuable === 'function'
     // 相邻投递二选一：sendMessage（当前官方公开 runtime 唯一通道；sender 即 live 父代理，
     // 来源由服务派生）/ queuePrompt（旧宿主兼容兜底：当前官方公开 runtime 已无该通道，
-    // 仅内部 continuation manager 持有 —— 取证见 runner.ts 的 SubagentsServiceLike）。
-    // 【0.1.5-rc.1 取证】官方 SubagentRuntime 已无 followup 方法（rc.2 面），故不再作为
-    // 可用性判据；registerContinuableSetup 亦早已移除，不再判定。
+    // 仅内部 continuation manager 持有）。
+    // 官方 SubagentRuntime 已无 followup 方法，故不再作为可用性判据；
+    // registerContinuableSetup 亦早已移除，不再判定。
     && (typeof (service as { sendMessage?: unknown }).sendMessage === 'function'
         || typeof (service as { queuePrompt?: unknown }).queuePrompt === 'function')
     && typeof (service as { interrupt?: unknown }).interrupt === 'function'

@@ -1,24 +1,19 @@
 import type { CoordinatorMessage } from './seams.js';
-/** wf_ask_agent 三态命令。 */
-export type AskAgentCmd = 'ask' | 'reply' | 'resolve';
-/** resolve 三动作：continue 重启计时 / resend 重发 / abort 终止。 */
-export type ResolveAction = 'continue' | 'resend' | 'abort';
+/** wf_ask_agent 两态命令（ask 投递并登记待回复 / reply 答复并反向投递）。 */
+export type AskAgentCmd = 'ask' | 'reply';
 /** wf_ask_agent 入参（工具参数经 schema 校验后传入；未知字段宽松处理）。 */
 export interface AskAgentArgs {
     cmd?: unknown;
     targetChildId?: unknown;
     askId?: unknown;
     message?: unknown;
-    action?: unknown;
 }
-/** wf_ask_agent 返回（cmd 恒为本次调用的命令；ask 挂起结束时携带回复）。 */
+/** wf_ask_agent 返回（cmd 恒为本次调用的命令；ask 返回受理凭证，回复不在此回传）。 */
 export interface AskAgentResult {
-    cmd: 'ask' | 'reply' | 'resolve';
+    cmd: 'ask' | 'reply';
     askId?: string;
     from?: string;
     to?: string;
-    reply?: string;
-    action?: ResolveAction;
 }
 /** 协作消息投递缝（真实实现 = 在线 steer / 冷态 followup；单测 fake）。 */
 export interface AskAgentDelivery {
@@ -29,11 +24,6 @@ export interface AskAgentDelivery {
         message: CoordinatorMessage;
         signal?: AbortSignal;
     }): Promise<void>;
-    /** 把超时详情通知父代理（steer 注入，父代理回合内征询用户并 resolve）。 */
-    notifyParent(input: {
-        sessionId: string;
-        message: CoordinatorMessage;
-    }): void;
 }
 /** 审计事件单条（at 为 ISO 时间；detail 为事件附注）。 */
 export interface AskAuditEntry {
@@ -41,7 +31,11 @@ export interface AskAuditEntry {
     event: string;
     detail: string;
 }
-/** 挂起的协作通信记录（注册于 RunEntry.asks；A 的阻塞等待由此驱动）。 */
+/**
+ * 待回复登记记录（注册于 RunEntry.asks）。
+ * 只承担两件事：reply 的归属校验（谁问的、问的谁、问的哪一题）+ 审计链。
+ * 不含 Promise/timer/状态机：ask 不挂起，故无等待受体，记录到期由 TTL 惰性清理。
+ */
 export interface PendingAsk {
     askId: string;
     from: string;
@@ -49,15 +43,10 @@ export interface PendingAsk {
     fromNodeId: string;
     toNodeId: string;
     message: string;
-    timeoutMs: number;
+    /** 记录保留时长（到期后惰性清理，停止接受该 askId 的 reply）。 */
+    ttlMs: number;
     expiresAt: number;
-    state: 'pending' | 'timed-out' | 'resolved' | 'aborted';
     audit: AskAuditEntry[];
-    promise: Promise<AskAgentResult>;
-    resolve: (result: AskAgentResult) => void;
-    reject: (error: unknown) => void;
-    timer: ReturnType<typeof setTimeout> | null;
-    delivery: AskAgentDelivery;
 }
 /** 协作消息文本长度上限（防御性截断）。 */
 export declare const ASK_MESSAGE_LIMIT = 20000;
@@ -65,5 +54,8 @@ export declare const ASK_MESSAGE_LIMIT = 20000;
 export declare function coordinatorMessage(id: string, text: string, senderSessionId: string): CoordinatorMessage;
 /** 投递给目标子代理的消息文本（含 askId 与回复指令，业务中文）。 */
 export declare function buildAskText(pending: Pick<PendingAsk, 'from' | 'fromNodeId' | 'to' | 'toNodeId' | 'askId' | 'message'>): string;
-/** 超时通知父代理的消息文本（父代理据此征询用户并 resolve）。 */
-export declare function buildTimeoutText(pending: Pick<PendingAsk, 'from' | 'fromNodeId' | 'to' | 'toNodeId' | 'askId' | 'message' | 'timeoutMs'>): string;
+/**
+ * 反向投递给发起者的回复文本（方向与 ask 相反：发送者为回复方，接收者为发起者）。
+ * 带 askId 便于发起者把回复关联回自己发起的提问。
+ */
+export declare function buildReplyText(pending: Pick<PendingAsk, 'from' | 'fromNodeId' | 'to' | 'toNodeId' | 'askId'>, reply: string): string;

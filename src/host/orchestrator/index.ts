@@ -57,11 +57,11 @@ export {
   type Waiter,
 } from './run-entry.js'
 
-// wf_ask_agent 三态通信协议（类型/常量/文本纯函数）
+// wf_ask_agent 两态通信协议（类型/常量/文本纯函数）
 export {
   ASK_MESSAGE_LIMIT,
   buildAskText,
-  buildTimeoutText,
+  buildReplyText,
   coordinatorMessage,
   type AskAgentArgs,
   type AskAgentCmd,
@@ -69,7 +69,6 @@ export {
   type AskAgentResult,
   type AskAuditEntry,
   type PendingAsk,
-  type ResolveAction,
 } from './ask-protocol.js'
 
 // 图推导与节点上下文事实（纯函数）

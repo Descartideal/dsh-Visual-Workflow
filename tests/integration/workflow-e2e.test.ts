@@ -303,7 +303,7 @@ describe('e2e：wf_ask_agent 越权拒绝与通信闭环', () => {
     const r1 = (await h.runtime.wfRunNode({ isChild: false, sessionId: 'session-1' }, { nodeId: 'n-a1' })) as { childId: string }
     const r2 = (await h.runtime.wfRunNode({ isChild: false, sessionId: 'session-1' }, { nodeId: 'n-a2' })) as { childId: string }
 
-    // 正常 ask：deliver 被调用（steer 投递），reply 解锁
+    // 正常 ask（非阻塞）：返回受理凭证，deliver 被调用（steer 投递）
     const delivered: Array<{ to: string; text: string }> = []
     const delivery = {
       deliver: vi.fn(async (input: { to: string; message: { content?: Array<{ text?: string }> } }) => {
@@ -313,25 +313,30 @@ describe('e2e：wf_ask_agent 越权拒绝与通信闭环', () => {
         })
       }),
     }
-    const askPromise = h.runtime.wfAskAgent(
+    const askResult = await h.runtime.wfAskAgent(
       { isChild: true, sessionId: 'session-1' },
       r1.childId,
       { cmd: 'ask', targetChildId: r2.childId, message: '请提供数据' },
       delivery as never,
     )
-    await Promise.resolve() // 投递路径 microtask
+    expect(askResult).toMatchObject({ cmd: 'ask', from: r1.childId, to: r2.childId })
+    expect(delivered).toHaveLength(1)
     expect(delivered[0]?.to).toBe(r2.childId)
-    const askId = /askId:\s*([0-9A-Za-z-]+)/.exec(delivered[0]?.text ?? '')?.[1] ?? ''
+    const askId = askResult.askId ?? ''
     expect(askId).toBeTruthy()
-    const askResult = await h.runtime.wfAskAgent(
+    expect(delivered[0]?.text).toContain(askId)
+
+    // reply 反向投递：回复作为新消息送达发起者（非调用结果）
+    const replyResult = await h.runtime.wfAskAgent(
       { isChild: true, sessionId: 'session-1' },
       r2.childId,
       { cmd: 'reply', askId, targetChildId: r1.childId, message: '数据在此' },
       delivery as never,
     )
-    expect(askResult.cmd).toBe('reply')
-    const settled = await askPromise
-    expect(settled).toMatchObject({ cmd: 'ask', reply: '数据在此' })
+    expect(replyResult).toMatchObject({ cmd: 'reply', askId, from: r2.childId, to: r1.childId })
+    expect(delivered).toHaveLength(2)
+    expect(delivered[1]?.to).toBe(r1.childId)
+    expect(delivered[1]?.text).toContain('数据在此')
 
     // 越权拒绝：非本运行子代理 ask（childIndex 未登记）→ 禁止
     await expect(h.runtime.wfAskAgent(
@@ -361,7 +366,7 @@ describe('e2e：wf_ask_agent 越权拒绝与通信闭环', () => {
     const dispose = registerWfAskAgent(ctx as never, { orchestrator: null as never, followupChild: null as never } as never)
     expect(registered[0]?.name).toBe(WF_ASK_AGENT)
     const desc = String(registered[0]?.description ?? '')
-    expect(desc).toMatch(/^Exchange blocking messages/) // 英文标准写法：何时调用开头
+    expect(desc).toMatch(/^Exchange messages/) // 英文标准写法：何时调用开头
     expect(desc.length).toBeLessThan(700)
     dispose()
   })

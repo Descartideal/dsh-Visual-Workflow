@@ -20,7 +20,7 @@ export declare class RuntimeObserve extends RuntimeComm {
     private deferSubagentEnd;
     /**
      * 协作组聚合：某成员产出一轮后，若其所属协作组全部成员均已「产出一轮」
-     * （armed/ok/react-capped），且该组当前无挂起/超时 ask，把组卡片标记为 ok
+     * （armed/ok/react-capped），且该组当前无待回复 ask，把组卡片标记为 ok
      * （只影响运行回显，不干预父代理调度）。组卡片单向推进：仅 pending → ok；
      * 成员后续重试/失败不回退组卡片。流程读取失败时跳过聚合（下一次成员完成事件重试）。
      */

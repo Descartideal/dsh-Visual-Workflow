@@ -646,11 +646,13 @@ export abstract class RuntimeBase {
     entry.waiters.clear()
   }
 
-  /** 拒绝某运行的全部挂起协作通信（终止/卸载路径：清计时器 + reject + 清表）。 */
-  protected rejectAsks(entry: RunEntry, error: unknown = new WfError('该工作流已停止', 'WF_CANCELLED')): void {
+  /**
+   * 释放某运行的全部待回复协作登记（终止/替换/卸载路径）。
+   * 非阻塞协议下登记不含等待受体，故无拒绝语义：仅清表 + 写审计（幂等）。
+   */
+  protected rejectAsks(entry: RunEntry): void {
     for (const pending of entry.asks.values()) {
-      if (pending.timer) clearTimeout(pending.timer)
-      pending.reject(error)
+      this.log().info(`[visual-workflow] wf_ask_agent audit: askId=${pending.askId} released`)
     }
     entry.asks.clear()
   }

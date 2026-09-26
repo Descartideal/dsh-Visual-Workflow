@@ -1,25 +1,30 @@
 // src/host/tools/wf-ask-agent/tool.ts
 //
-// wf_ask_agent 工具注册（三态协议 ask/reply/resolve）。
+// wf_ask_agent 工具注册（两态协议 ask/reply，非阻塞）。
 //
 // 职责边界：
 //   - 本文件只做「注册（defineTool DSL）+ 投递缝构造（delivery）」；
-//     归属校验（运行锁 / childIndex 表内所有权 / 会话归属）、三态状态机、
-//     超时计时与裁决、审计全部收敛在编排运行时（runtime.wfAskAgent）；
+//     归属校验（运行锁 / childIndex 表内所有权 / 会话归属）、两态协议、
+//     待回复登记与 TTL 惰性清理、审计全部收敛在编排运行时（runtime.wfAskAgent）；
 //   - 投递缝（AskAgentDelivery）是运行时与宿主能力之间的桥：目标在线 →
 //     agent.steer（下一步边界插队）；目标不在线/冷态 → subagents.followup
-//     （官方冷恢复）；超时 → 超时详情 steer 注入父代理（其回合内征询用户）。
+//     （官方冷恢复）。ask 与 reply 双向共用同一投递语义。
+//
+// 非阻塞语义（本次定案）：
+//   - ask 只做「投递 + 登记待回复」，随即返回受理凭证，调用方不挂起；
+//   - reply 把回复文本反向投递给发起者，由发起者的后续回合处理；
+//   - 超时裁决（resolve/continue/resend/abort）与父代理介入已退役。
 //
 // 工具可见性：
-//   - 父代理可见（resolve 裁决能力内聚）；子代理侧为可选注入——组合勾选才进
-//     白名单（共享协议常量表），本层不额外隐藏。
+//   - 全局注册（本轮不改可见性路径）；父代理侧调用会按命令语义被拒绝
+//     （ask/reply 均仅子代理可用），子代理侧为可选注入——组合勾选才进白名单。
 //
 // 提示词规范：description 与参数说明使用官方标准英文（W-03），第一句写明
-// 「何时调用」，随后是前置条件/失败语义（WF_* 稳定错误码）/副作用（阻塞 /
-// 插队）；单条 description 目标 ≤ 120 tokens。
+// 「何时调用」，随后是前置条件/失败语义（WF_* 稳定错误码）/副作用（插队投递）。
+// 单条 description 目标 ≤ 120 tokens。
 
 import { WF_ASK_AGENT } from '../../shared/protocol.js'
-import type { AskAgentDelivery, OrchestratorRuntime, RootAgentLike } from '../../orchestrator/index.js'
+import type { AskAgentDelivery, RootAgentLike } from '../../orchestrator/index.js'
 import { callerOf, type WfToolsHost } from '../infrastructure/caller.js'
 import { defineTool, type ToolDefinitionLike } from '../infrastructure/define-tool.js'
 import { textRender } from '../infrastructure/text-render.js'
@@ -40,8 +45,7 @@ export interface WfAskAgentHost extends WfToolsHost {
 /**
  * 构造投递缝（delivery）：
  *   - deliver：目标在线（可 steer）→ 插队投递（下一步边界可见）；否则冷恢复
- *     followup（父 root 授权）；
- *   - notifyParent：超时详情 steer 注入父代理（父代理在下一回合征询用户并 resolve）。
+ *     followup（父 root 授权）。ask 投递给对端、reply 投递回发起者，共用此缝。
  */
 function makeDelivery(host: WfAskAgentHost): AskAgentDelivery {
   return {
@@ -60,10 +64,6 @@ function makeDelivery(host: WfAskAgentHost): AskAgentDelivery {
         source: message.source,
         ...(signal ? { signal } : {}),
       })
-    },
-    notifyParent({ sessionId, message }) {
-      const root = host.getRootAgent(sessionId)
-      if (root && typeof root.steer === 'function') root.steer(message)
     },
   }
 }
@@ -86,29 +86,26 @@ export function registerWfAskAgent(
   const def = defineTool({
     name: WF_ASK_AGENT,
     description:
-      'Exchange blocking messages between agent nodes of the running workflow. ' +
-      'Use inside a collaboration group: ask sends a message to a peer and blocks until the peer replies; ' +
+      'Exchange messages between agent nodes of the running workflow. ' +
+      'Use inside a collaboration group: ask sends a message to a peer and returns immediately with an askId (it does not wait); ' +
       'targetChildId takes the peer node id from your collaboration block, or its child session id, and the peer is reachable even when idle or stopped (cold-resumed and woken); ' +
-      'reply answers an ask by its askId and unblocks the sender; resolve settles an ask that timed out (default 120 s) — parent agent only, after consulting the user. ' +
+      'reply answers an ask by its askId; the reply is delivered back to the asker as a new message, so the answer arrives in a later turn rather than as this call result. ' +
       'Fails with WF_* codes on invalid targets, ownership violations, or after the run stops.',
     parameters: {
-      cmd: { type: 'string', required: true, enum: ['ask', 'reply', 'resolve'] as const, description: 'ask: send and block; reply: answer an ask; resolve: settle a timed-out ask (parent only).' },
-      targetChildId: { type: 'string', description: 'Peer node id (from your collaboration block) or child session id: the ask target (ask), or the original sender to reply to (reply).' },
-      askId: { type: 'string', description: 'Ask id to reply to (reply) or settle (resolve); returned by the ask caller via the delivered message.' },
-      message: { type: 'string', description: 'Message text (ask/reply); optional explanatory note on resolve.' },
-      action: { type: 'string', enum: ['continue', 'resend', 'abort'] as const, description: 'resolve action: continue waiting, resend the ask, or abort it (the sender gets a timeout error).' },
+      cmd: { type: 'string', required: true, enum: ['ask', 'reply'] as const, description: 'ask: send a message and return an askId; reply: answer an ask by its askId.' },
+      targetChildId: { type: 'string', description: 'Peer node id (from your collaboration block) or child session id: the ask target (ask), or the original asker to reply to (reply).' },
+      askId: { type: 'string', description: 'Ask id to answer (reply); returned as an ask result and quoted in the delivered message.' },
+      message: { type: 'string', description: 'Message text (ask/reply).' },
     },
     output: {
       schema: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          cmd: { type: 'string', required: true, enum: ['ask', 'reply', 'resolve'] as const, description: 'The command that was executed.' },
-          askId: { type: 'string', description: 'The ask id (reply/resolve; ask result).' },
-          from: { type: 'string', description: 'Sender child session id (reply/ask result).' },
-          to: { type: 'string', description: 'Target child session id (reply/ask result).' },
-          reply: { type: 'string', description: 'The reply text (ask result, after the peer answered).' },
-          action: { type: 'string', enum: ['continue', 'resend', 'abort'] as const, description: 'The resolve action taken.' },
+          cmd: { type: 'string', required: true, enum: ['ask', 'reply'] as const, description: 'The command that was executed.' },
+          askId: { type: 'string', description: 'The ask id (ask result; reply echoes it).' },
+          from: { type: 'string', description: 'Sender child session id.' },
+          to: { type: 'string', description: 'Target child session id.' },
         },
       },
       render: textRender,
