@@ -4,7 +4,8 @@
 // 做硬编码文案断言**，只断言
 //   1. 字节稳定 / 纯函数（同参数两次构建字节相同；仅改动态参数时 TAIL_MARKER 之前不变）；
 //   2. 段落位置（HEAD → MID → TAIL → 重申 的顺序与区段归属）；
-//   3. 三层 SOP：L1/L2 稳定段落在中段且与动态值无关；L3 注入点默认不组装、给出时仅出现在末段；
+//   3. 编排规则不随提示词注入：正文不出现，只在中段给出「规则由 wf_org_catalog 返回」的
+//      来源指引；L3 用户 SOP 注入点默认不组装、给出时仅出现在末段；
 //   4. 组织预算文本仅在末段注入（与 buildOrgBudgetText 联调）；
 //   5. 关键约束双位（首段 + 末段重申），经 ORG_PLAN_HARD_CONSTRAINTS 常量引用；
 //   6. 目标三态（create 新建 / template 改模板 / instance 改实例）的身份与语法指引互斥；
@@ -16,6 +17,7 @@ import {
   TAIL_MARKER,
   TAIL_RESTATE_MARKER,
   ORG_PLAN_HARD_CONSTRAINTS,
+  ORG_RULES_SOURCE_NOTE,
   ORG_SOP_L1_GRAPH_SEMANTICS,
   ORG_SOP_DESIGN_METHOD,
   buildOrgBudgetText,
@@ -110,18 +112,23 @@ describe('P2 规划提示词（buildOrgPlanPrompt）', () => {
     expect(splitTail(out).tail).not.toContain('用户意图：\n')
   })
 
-  it('L1 图语义与设计方法位于中段（MID 之后、TAIL 之前），且不在首段/末段重复', () => {
+  it('编排规则不随提示词注入：正文不出现，中段只给「规则由 wf_org_catalog 返回」的来源指引', () => {
     const out = buildOrgPlanPrompt({ facts, dynamic: { userIntent: 'x' } })
+    // 规则文本的唯一注入点是工具返回（规划期与运行期共用同一份），提示词内不得重复
+    expect(out).not.toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
+    expect(out).not.toContain(ORG_SOP_DESIGN_METHOD)
     const mid = out.indexOf(MID_MARKER)
     const tail = out.indexOf(TAIL_MARKER)
-    const middle = out.slice(mid, tail)
-    expect(middle).toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
-    expect(middle).toContain(ORG_SOP_DESIGN_METHOD)
-    expect(out.slice(0, mid)).not.toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
-    expect(out.slice(0, mid)).not.toContain(ORG_SOP_DESIGN_METHOD)
-    expect(out.slice(tail)).not.toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
-    expect(out.slice(tail)).not.toContain(ORG_SOP_DESIGN_METHOD)
-    expect(middle.indexOf(ORG_SOP_L1_GRAPH_SEMANTICS)).toBeLessThan(middle.indexOf(ORG_SOP_DESIGN_METHOD))
+    expect(out.slice(mid, tail)).toContain(ORG_RULES_SOURCE_NOTE)
+    expect(out.slice(0, mid)).not.toContain(ORG_RULES_SOURCE_NOTE)
+    expect(out.slice(tail)).not.toContain(ORG_RULES_SOURCE_NOTE)
+  })
+
+  it('首段硬约束要求「先取规则再动手」（wf_org_catalog 是第一动作）', () => {
+    const out = buildOrgPlanPrompt({ facts, dynamic: { userIntent: 'x' } })
+    expect(out).toContain(ORG_PLAN_HARD_CONSTRAINTS.surveyFirst)
+    expect(ORG_PLAN_HARD_CONSTRAINTS.surveyFirst).toContain('wf_org_catalog')
+    expect(ORG_PLAN_HARD_CONSTRAINTS.surveyFirst).toContain('规则')
   })
 
   it('L3 用户 SOP 注入点默认不组装；给出时标题与正文仅出现在末段', () => {

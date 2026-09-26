@@ -19,8 +19,6 @@
 - orchestrator 仅允许**类型**导入其公共入口（`NodeRunner` / `AgentHost` / `NodeStartInput` 等契约缝）；本模块不得成为 orchestrator 的运行时依赖；
 - storage 仅类型与读取缝；graph 仅纯函数事实推导；shared 仅共享类型与协议常量；Node 内置模块（fs / async_hooks）。
 
-**官方适配必须可追溯**：改官方 seam 适配时，注释中必须写明包名与符号、取证结论（含版本差异）、失效或缺失时的降级路径与后果。不得凭记忆或推断编写官方契约。
-
 ## 状态所有权
 
 - 模块外只能经公开方法/事件请求变化，不得直接修改内部表；

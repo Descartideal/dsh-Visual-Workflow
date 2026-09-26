@@ -1,36 +1,35 @@
 // 工作流图模型纯类型（shared 层）。
 //
-// 本文件是「节点/连线判别模型」的类型规范本体，逐字对齐架构文档 AD-001 §4.2
-// 「graph/（工作流数据模型与校验）」代码块，并补充需求文档 PRD-001 §4.2（节点
-// 管理模块）/ §4.3（连线管理模块）的业务语义说明。
+// 本文件是「节点/连线判别模型」的类型规范本体，定义节点与连线的判别类型形状，
+// 并补充业务语义说明。
 //
-// 约束（见 ./AGENTS.md）：
+// 约束：
 //   - 本文件为 client 半区可零风险类型引用的纯形状层：**只允许 `import type`**
 //     （编译期完全擦除），**禁止运行时 import，也不得定义运行时值**（函数/对象常量
-//     一律不放这里，运行时校验与工厂归 src/host/graph/ 负责，本文件只约束「形状」）。
-//   - 每个字段均以中文 JSDoc 说明业务语义，并引用需求条款号（PRD §4.x.y）。
+//     一律不放这里，运行时校验与工厂归相关模块负责，本文件只约束「形状」）。
+//   - 每个字段均以中文 JSDoc 说明业务语义。
 
 import type { OrgMeta } from './org-meta.js'
 
 // ---------------------------------------------------------------------------
-// 节点判别联合（架构文档 §4.2 代码块 + 需求文档 §4.2）
+// 节点判别联合
 // ---------------------------------------------------------------------------
 
-/** 节点种类：9 种判别的稳定字面量（架构文档 §4.2；需求文档 §4.2.3~§4.2.5）。 */
+/** 节点种类：9 种判别的稳定字面量。 */
 export type NodeKind =
-  | 'parent' // 父代理节点：调度中枢与最终汇总者（需求文档 §4.2.3.1）
-  | 'agent' // 子代理节点：任务执行单元（需求文档 §4.2.3.2）
-  | 'file' // 文件节点：文本/受管文件数据源（需求文档 §4.2.4.1）
-  | 'database' // 数据库节点：本地/服务器数据源（需求文档 §4.2.4.2）
-  | 'start' // 启动阶段节点（模式一入口，需求文档 §4.2.5.1）
-  | 'end' // 结束阶段节点（模式一出口，需求文档 §4.2.5.1）
-  | 'pause' // 暂停阶段节点（流程门，需求文档 §4.2.5.1）
-  | 'group' // 协作组节点：组卡片 + 组内角色并行（需求文档 §4.2.5.2）
-  | 'proxy' // 虚拟节点：主节点别名引用，无独立配置（需求文档 §4.2.3.2 规则 4/7）
+  | 'parent' // 父代理节点：调度中枢与最终汇总者
+  | 'agent' // 子代理节点：任务执行单元
+  | 'file' // 文件节点：文本/受管文件数据源
+  | 'database' // 数据库节点：本地/服务器数据源
+  | 'start' // 启动阶段节点（模式一入口）
+  | 'end' // 结束阶段节点（模式一出口）
+  | 'pause' // 暂停阶段节点（流程门）
+  | 'group' // 协作组节点：组卡片 + 组内角色并行
+  | 'proxy' // 虚拟节点：主节点别名引用，无独立配置
 
-/** 节点公共基座：所有节点的共有最小字段（架构文档 §4.2 代码块）。 */
+/** 节点公共基座：所有节点的共有最小字段。 */
 export interface BaseNode {
-  /** 节点稳定标识（画布内唯一；运行期以 sessionId:flowId:nodeId 复用子代理，§4.2.3.2 规则 3）。 */
+  /** 节点稳定标识（画布内唯一；运行期以 sessionId:flowId:nodeId 复用子代理）。 */
   id: string
   /** 节点种类，判别联合的判据。 */
   kind: NodeKind
@@ -40,45 +39,43 @@ export interface BaseNode {
 
 /**
  * 角色节点：父代理（kind='parent'）与子代理（kind='agent'）共用的数据形状。
- * 架构文档 §4.2 代码块将二者合一为 RoleNode 判别（kind 收窄为 'parent' | 'agent'）。
- * 对应需求文档 §4.2.3.1（父代理）与 §4.2.3.2（子代理）。
+ * Kind 收窄为 'parent' | 'agent'，二者合一为 RoleNode 判别。
+ * 父代理与子代理分别对应不同章节。
  */
 export interface RoleNode extends BaseNode {
   kind: 'parent' | 'agent'
   data: {
-    /** 名称（左侧栏截断展示；见需求文档 §4.2.3.1 卡片设计）。 */
+    /** 名称（左侧栏截断展示）。 */
     label: string
-    /** 系统提示词：场景独立生效，不继承父/子任何一方（需求文档 §4.2.3.2 规则 1）。 */
+    /** 系统提示词：场景独立生效，不继承父/子任何一方。 */
     systemPrompt: string
     /** 服务商（模型提供方，经宿主适配器解析）。 */
     provider: string
     /** 模型标识（如 deepseek-chat 等）。 */
     model: string
-    /** 思考强度（可选；取值域以官方适配器公布的 reasoning efforts 为准，需求文档 §开放问题 V-02）。 */
+    /** 思考强度（可选；取值域以官方适配器公布的 reasoning efforts 为准）。 */
     reasoning?: string
-    /** 官方 Agent 预设 id（父代理仅 preset；子代理 preset 或自定义组合，需求文档 §4.2.3.1 规则 4）。 */
+    /** 官方 Agent 预设 id（父代理仅 preset；子代理 preset 或自定义组合）。 */
     presetId?: string | null
-    /** 回流重试次数上限（节点级尝试计数护栏，需求文档 §4.2.3.2 规则 3）。 */
+    /** 回流重试次数上限（节点级尝试计数护栏）。 */
     retryLimit: number
-    /** ReAct 迭代次数上限（软截停语义；null 表示不设限，需求文档 §4.2.3.2 规则 3 / V-01）。 */
+    /** ReAct 迭代次数上限（软截停语义；null 表示不设限）。 */
     reactLimit?: number | null
-    /** 输入结构描述（模型理解占位，不强校验，需求文档 §4.2.3.2 规则 3 注 Q18）。 */
+    /** 输入结构描述（模型理解占位，不强校验）。 */
     inputSchema?: string
     /** 输出结构描述（同上，占位不强校验）。 */
     outputSchema?: string
-    /** System Prompt 来源文件名（从 .md 加载时记录，左侧栏卡片展示用，需求文档 §4.2.3.1）。 */
+    /** System Prompt 来源文件名（从 .md 加载时记录，左侧栏卡片展示用）。 */
     systemPromptSource?: string
     /**
      * 官方系统提示词注入开关（默认 true；界面上是「人设段」开关）。
-     * true（开）= 官方 harness:identity / 人设（deployment:persona-prefix 与
-     *              deployment:persona-suffix）/ 系统 / 上下文段正常注入；
+     * true（开）= 官方 harness:identity / 人设前缀（deployment:persona-prefix）/ 系统 / 上下文段正常注入；
      * false（关）= 仅保留角色 Prompt 段（visual-workflow:prompt）+ tool:* 散文段
-     *              + Code Mode 协议段 + 工具 schema，清空其余全部官方系统提示词段
+     *              + Code Mode 协议段 + 工具 schema，清空其余全部官方**散文**段
      *              与 runtime context 快照（不再对官方段做任何插入/替换）。
-     * 说明（0.1.5-rc.1 取证）：原 deployment:persona 已拆为前缀（order 0）与
-     * 后缀（order 10200）；后缀文本为环境事实「Your working directory is {{cwd}}.」。
-     * 设置角色 Prompt 时只替换 identity 与前缀，后缀仍保留（工作目录事实），
-     * 但本开关 OFF 时后缀同样被清空。
+     * 例外（恒保留，不受本开关管辖）：环境事实段 `deployment:persona-suffix`，
+     * 即部署方配置的工作目录事实。
+     * 设置角色 Prompt 时只替换 identity 与前缀；工作目录事实始终注入。
      * 父/子代理节点均有此字段。
      */
     injectSystemPrompt?: boolean
@@ -100,53 +97,53 @@ export interface RoleNode extends BaseNode {
      * 未改动时复用原子代理、不重复读取。为空则直接使用 systemPrompt 文本。
      */
     promptFilePath?: string
-    /** 所属协作组 id（组内成员节点字段，需求文档 §4.2.5.2）。 */
+    /** 所属协作组 id（组内成员节点字段）。 */
     groupId?: string | null
   }
 }
 
 /**
- * 文件节点：文本或受管文件的上下文数据源（需求文档 §4.2.4.1）。
- * 架构文档 §4.2 代码块为独立 FileNode 接口。
+ * 文件节点：文本或受管文件的上下文数据源。
+ * 为独立 FileNode 接口。
  */
 export interface FileNode extends BaseNode {
   kind: 'file'
   data: {
-    /** 名称（需求文档 §4.2.4.1 卡片设计：左侧栏/右侧属性栏均展示）。 */
+    /** 名称（左侧栏/右侧属性栏均展示）。 */
     label: string
     /** 文件类型：文本内容直通，或受管文件（仅注入路径索引）。 */
     fileKind: 'text' | 'file'
-    /** 文本内容（fileKind='text' 时直通；注入上限默认 20000 字，§4.2.4.1 规则 1）。 */
+    /** 文本内容（fileKind='text' 时直通；注入上限默认 20000 字）。 */
     content?: string
-    /** 受管文件路径（fileKind='file' 单选时；复制进 data/files/ 避免源删除失效，§4.2.4.1 规则 2）。 */
+    /** 受管文件路径（fileKind='file' 单选时；复制进 data/files/ 避免源删除失效）。 */
     managedPath?: string
     /** 源文件名（非文本类型展示用）。 */
     fileName?: string
-    /** 多选文件列表（fileKind='file'；每项含受管路径与源文件名，用户验收：支持多选所有类型文件）。 */
+    /** 多选文件列表（fileKind='file'；每项含受管路径与源文件名）。 */
     files?: Array<{ fileName: string; managedPath: string }>
   }
 }
 
 /**
- * 数据库节点：本地/服务器数据库数据源（需求文档 §4.2.4.2）。
- * 内容绝不直接注入上下文，仅转换为检索/查询工具供代理调用（需求文档 §4.2.4.2 规则 4）。
+ * 数据库节点：本地/服务器数据库数据源。
+ * 内容绝不直接注入上下文，仅转换为检索/查询工具供代理调用。
  */
 export interface DatabaseNode extends BaseNode {
   kind: 'database'
   data: {
-    /** 名称（需求文档 §4.2.4.2 卡片设计）。 */
+    /** 名称（卡片设计）。 */
     label: string
-    /** 描述（需求文档 §4.2.4.2 卡片设计）。 */
+    /** 描述（卡片设计）。 */
     description: string
     /** 类型：本地（SQLite + 内置向量检索）或服务器（结构化只读查询）。 */
     dbType: 'local' | 'server'
-    /** 数据库引擎（服务器类型限定 MySQL / PostgreSQL，需求文档 §4.2.4.2 规则 2）。 */
+    /** 数据库引擎（服务器类型限定 MySQL / PostgreSQL）。 */
     dbKind: 'sqlite' | 'mysql' | 'postgresql'
     /** 本地数据库文件路径（dbType='local' 时）。 */
     localPath?: string
     /** 服务器连接信息（dbType='server' 时）。 */
     conn?: { host: string; port: number; user: string; password: string; db: string }
-    /** 向量检索模式：语义嵌入或 BM25 降级（本地类型，架构文档 §6.5；需求文档 §4.2.4.2 规则 1）。 */
+    /** 向量检索模式：语义嵌入或 BM25 降级（本地类型）。 */
     vectorSource?: 'embedding' | 'bm25'
     /**
      * 检索高级选项（UI 高级选项区可调；均有内置默认值，未配置时用默认）：
@@ -168,8 +165,8 @@ export interface DatabaseNode extends BaseNode {
 }
 
 /**
- * 阶段节点：启动/结束/暂停三态（需求文档 §4.2.5.1）。
- * 架构文档 §4.2 代码块将三者合一为 StageNode（kind 收窄为 'start' | 'end' | 'pause'）。
+ * 阶段节点：启动/结束/暂停三态。
+ * Kind 收窄为 'start' | 'end' | 'pause'，三者合一为 StageNode。
  * 属性锁定不可编辑（仅 label 硬编码名称）。
  */
 export interface StageNode extends BaseNode {
@@ -178,7 +175,7 @@ export interface StageNode extends BaseNode {
 }
 
 /**
- * 协作组节点：组卡片 + 组内角色并行执行（需求文档 §4.2.5.2）。
+ * 协作组节点：组卡片 + 组内角色并行执行。
  * 组内成员节点经 memberIds 关联；组卡片仅提供流程入/出连接点。
  */
 export interface GroupNode extends BaseNode {
@@ -186,11 +183,11 @@ export interface GroupNode extends BaseNode {
   data: {
     /** 组名称（左侧栏/右侧属性栏展示）。 */
     label: string
-    /** 协作 Prompt：追加到组内所有成员**首条用户消息（任务块）末尾**，不注入系统提示词；无论文本是否为空都默认列出组内全部成员 ID + 角色名（需求文档 §4.2.5.2 规则 2；架构文档 §13.1 第 4 条）。 */
+    /** 协作 Prompt：追加到组内所有成员**首条用户消息（任务块）末尾**，不注入系统提示词；无论文本是否为空都默认列出组内全部成员 ID + 角色名。 */
     collabPrompt: string
     /** 组内成员节点 id 列表（成员为角色节点，并行启动，规则 3）。 */
     memberIds: string[]
-    /** 卡片尺寸（拉伸/滚动布局用，需求文档 §4.2.5.2 规则 8/9）。 */
+    /** 卡片尺寸（拉伸/滚动布局用）。 */
     size?: { w: number; h: number }
   }
 }
@@ -198,9 +195,9 @@ export interface GroupNode extends BaseNode {
 /**
  * 虚拟节点（ProxyNode）：主节点的别名引用，用于拓扑复用。
  * 无独立配置——运行时 wf_run_node 指向虚拟节点时解析为主节点 key，与主节点共享
- * 同一子代理执行实例与上下文（需求文档 §4.2.3.2 规则 4/6/7）。
+ * 同一子代理执行实例与上下文。
  * 引用主节点 id 由**节点接口顶层**的 proxySourceId 字段承载（非 data 内）；
- * 架构文档 §4.2 代码块未单列 ProxyNode，此处为补充定义，并以 kind='proxy'
+ * 未单列 ProxyNode 接口，此处为补充定义，并以 kind='proxy'
  * 显式标识虚拟节点，避免与被引用的主节点 RoleNode 混淆。
  */
 export interface ProxyNode extends BaseNode {
@@ -208,10 +205,10 @@ export interface ProxyNode extends BaseNode {
   /** 引用主节点的 id（虚拟节点不存储独立配置，仅此一个引用字段）。 */
   proxySourceId: string
   /**
-   * 可选视图/识别数据（P3 新增，自主编排方案 §5.2 扩展1；**全部可选，向后兼容**）。
+   * 可选视图/识别数据（**全部可选，向后兼容**）。
    * 为什么需要它：同一个父代理可以被多个虚拟节点引用，运行时必须能区分
    * 「普通执行入口」与「里程碑闸门」——闸门那一轮**不自动完成**，只能由
-   * `wf_graph_patch(mark_node)` 显式标记（D-07）。
+   * `wf_graph_patch(mark_node)` 显式标记。
    */
   data?: {
     /** 画布显示名（如「里程碑①：方案评审」）。 */
@@ -222,9 +219,9 @@ export interface ProxyNode extends BaseNode {
 }
 
 /**
- * 节点判别联合：按 kind 判别具体数据形状（架构文档 §4.2）。
- * 注：元参数规模统计口径的「可执行单元节点种类」是跨层常量，见 ./protocol.js 的
- * `EXECUTABLE_UNIT_KINDS`（本文件保持纯形状，不含运行时值）。
+ * 节点判别联合：按 kind 判别具体数据形状。
+ * 注：元参数规模统计口径的「可执行单元节点种类」是跨层常量，
+ * 本文件保持纯形状，不含运行时值。
  */
 export type GraphNode =
   | RoleNode
@@ -235,14 +232,14 @@ export type GraphNode =
   | ProxyNode
 
 // ---------------------------------------------------------------------------
-// 连线模型（架构文档 §4.2 代码块 + 需求文档 §4.3）
+// 连线模型
 // ---------------------------------------------------------------------------
 
 /**
- * 连接点类型（Handle）：节点上的物理接线端，分方向属类（架构文档 §4.2 代码块）。
+ * 连接点类型（Handle）：节点上的物理接线端，分方向属类。
  *  - 入侧：flow-in（流程入）、ctx-in（上下文入）、db-in（数据库入）
  *  - 出侧：flow-out（流程出）、ctx-out（上下文出）、db-out（数据库出）
- * 语义对应需求文档 §4.2.3.1 连接点定义表（角色节点 5 连接点）。
+ * 语义对应连接点定义表（角色节点 5 连接点）。
  */
 export type Handle =
   | 'flow-in' // 流程入：接收流程控制信号，触发节点执行
@@ -252,12 +249,12 @@ export type Handle =
   | 'ctx-out' // 上下文出：将最终输出注入下游（非记忆注入）
   | 'db-out' // 数据库出：注入数据库服务标识
 
-/** 条件连线类型（需求文档 §4.3 连线类型表：通过/不通过/内容）。 */
+/** 条件连线类型：通过/不通过/内容。 */
 export type ConditionType = 'pass' | 'fail' | 'content'
 
 /**
- * 连线（Line）：两节点间有向线段（架构文档 §4.2 代码块）。
- * 条件连线仅适用于「流程出 → 流程入」（需求文档 §4.3 规则 4）；上下文/数据库连线无条件。
+ * 连线（Line）：两节点间有向线段。
+ * 条件连线仅适用于「流程出 → 流程入」；上下文/数据库连线无条件。
  */
 export interface Line {
   /** 连线稳定标识。 */
@@ -270,15 +267,15 @@ export interface Line {
   sourceHandle: Handle
   /** 目标侧连接点类型（Handle）。 */
   targetHandle: Handle
-  /** 条件（可选）：仅流程线可带条件；条件判断由父代理语义判定（需求文档 §4.3 规则 3/4）。 */
+  /** 条件（可选）：仅流程线可带条件；条件判断由父代理语义判定。 */
   condition?: { type: ConditionType; label?: string }
 }
 
 // ---------------------------------------------------------------------------
-// 工作流文档（实例定义：节点 + 连线，架构文档 §3 目录 / 需求文档 §4.2.2）
+// 工作流文档（实例定义：节点 + 连线）
 // ---------------------------------------------------------------------------
 
-/** 运行模式：模式一编排执行、模式二后台服务（需求文档 §1 双模式架构）。 */
+/** 运行模式：模式一编排执行、模式二后台服务。 */
 export type WorkflowMode = 'mode1' | 'mode2'
 
 /**
@@ -311,7 +308,7 @@ export interface WorkflowTemplate {
   /** 修订版本号（可选，与实例保存对齐）。 */
   revision?: number
   /**
-   * 元参数（可选）：父代理自主编排的可调节参数（自主编排方案 §6.4 / D-13 三层之「模板层」）。
+   * 元参数（可选）：父代理自主编排的可调节参数（三层之「模板层」）。
    * 全部可选、缺省即不约束；旧模板不含该字段，读到时按缺省处理（向后兼容）。
    */
   meta?: OrgMeta
@@ -337,15 +334,14 @@ export interface LastAgentPatch {
 }
 
 /** 工作流文档（WorkflowDocument）：完整编排流程定义，关联画布所有节点与连线
- * （需求文档 §4.2.2 工作流实例定义）。
  * 「节点 JSON 即事实源」：nodes/lines 为全量内联快照，不含 templateId 引用
- * （需求文档 §4.2.1 数据模型核心规则）。
+ * （数据模型核心规则）。
  */
 export interface WorkflowDocument {
-  // 说明：meta 字段类型即 ./org-meta.ts 的 OrgMeta 本体（type-only 引用，编译期擦除）
-  /** 工作流稳定标识（flowId，会话内唯一；按 sessionId + flowId 维度隔离，需求文档 §4.2.2 规则 3）。 */
+  // 说明：meta 字段类型即 OrgMeta 本体（type-only 引用，编译期擦除）
+  /** 工作流稳定标识（flowId，会话内唯一；按 sessionId + flowId 维度隔离）。 */
   id: string
-  /** 归属会话 id（会话隔离存储，需求文档 §4.2.2 规则 3）。 */
+  /** 归属会话 id（会话隔离存储）。 */
   sessionId: string
   /** 运行模式：强制二选一（mode1 编排执行 / mode2 后台服务）。 */
   mode: WorkflowMode
@@ -369,7 +365,7 @@ export interface WorkflowDocument {
   /** 修订版本号（可选，配合增量/缓存优化用，非必需）。 */
   revision?: number
   /**
-   * 元参数（可选）：父代理自主编排的可调节参数（自主编排方案 §6.4 / D-13 三层之「实例层」）。
+   * 元参数（可选）：父代理自主编排的可调节参数（三层之「实例层」）。
    * 有效值 = 实例覆盖模板；startRun 时把有效值冻结进 run 快照（snapshot.meta）。
    */
   meta?: OrgMeta

@@ -3,13 +3,14 @@
 // T-021 提示词注入装配测试：验证 bindParent 把父代理（根 Agent）提示词状态写入其 ctx，
 // 注册 visual-workflow:prompt 段。
 //
-// 【0.1.5-rc.1 语义（本轮迁移后定案）】
-// - 人设段由官方拆为两段：deployment:persona-prefix（order 0，人设散文）
-//   与 deployment:persona-suffix（order 10200，实为环境事实「Your working directory is {{cwd}}.」）；
-// - 角色 Prompt 设置时**只替换 harness:identity + deployment:persona-prefix**（接管人设），
-//   deployment:persona-suffix **保留**（工作目录事实仍由官方在提示词末尾提供）；
+// 【段语义】
+// - 人设段由官方拆为两段：deployment:persona-prefix（人设散文）
+//   与 deployment:persona-suffix（环境事实「Your working directory is {{cwd}}.」）；
+// - 角色 Prompt 设置时**只替换 harness:identity + deployment:persona-prefix**（接管人设）；
+// - deployment:persona-suffix 属**环境事实段**，与两个开关都无关（恒保留）：
+//   用一个人格开关清空「代理在哪里」属误伤；
 // - 「人设段」开关（injectSystemPrompt）OFF：清空除角色段 / tool:* 散文段 / Code 协议段
-//   之外的全部官方段与 contexts —— 此时 suffix 也被清空；
+//   / 环境事实段之外的全部官方散文段与 contexts；
 // - 工具散文段开关（injectToolSections）OFF：仅移除 tool:* 段；
 // - Code Mode 协议段 tools:sdk / tools:ptc-only（旧名 tools:code-only）与 tools[] 恒保留。
 //
@@ -169,7 +170,7 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
     expect(out.contexts).toHaveLength(1)
     expect(out.tools).toBe(toolsIn)
   })
-  it('开关 OFF（人设段）：清空全部官方段（含 persona 前后缀）与上下文，仅留角色段 + tool:* + 协议段', async () => {
+  it('开关 OFF（人设段）：清空官方散文段与上下文，仅留角色段 + tool:* + 协议段 + 环境事实段', async () => {
     const setup = createChildPromptSetup()
     const ctx = makeCtx()
     setup.bindParent(ctx, { systemPrompt: '父代理角色', injectSystemPrompt: false, injectToolSections: true }, 's')
@@ -192,10 +193,10 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
     expect(names).toContain(SEC.sdk)
     expect(names).toContain(SEC.ptcOnly)
     expect(names).toContain(SEC.codeOnly)
-    // 官方段全部清空——含 persona 前缀与后缀
+    // 官方散文段全部清空——含 persona 前缀；但**环境事实段（persona 后缀）恒保留**
     expect(names).not.toContain(SEC.identity)
     expect(names).not.toContain(SEC.personaPrefix)
-    expect(names).not.toContain(SEC.personaSuffix)
+    expect(names).toContain(SEC.personaSuffix)
     expect(names).not.toContain(SEC.plan)
     expect(names).not.toContain(SEC.workspace)
     expect(out.contexts).toHaveLength(0)
@@ -203,7 +204,7 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
     expect(out.tools).toBe(toolsIn)
   })
 
-  it('角色 Prompt 设置 + 人设段 OFF：identity / persona 前后缀三段全无', async () => {
+  it('角色 Prompt 设置 + 人设段 OFF：identity / persona 前缀无，环境事实段（persona 后缀）仍在', async () => {
     const setup = createChildPromptSetup()
     const ctx = makeCtx()
     setup.bindParent(ctx, { systemPrompt: '父代理角色', injectSystemPrompt: false, injectToolSections: true }, 's')
@@ -215,7 +216,8 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
     expect(names).toContain(VISUAL_WORKFLOW_PROMPT_SECTION)
     expect(names).not.toContain(SEC.identity)
     expect(names).not.toContain(SEC.personaPrefix)
-    expect(names).not.toContain(SEC.personaSuffix)
+    // 环境事实段不受任何人设/工具开关管辖：OFF 也必须保留
+    expect(names).toContain(SEC.personaSuffix)
   })
 
   it('工具散文段开关 OFF：仅移除 tool:* 段，保留官方段（含 persona 前后缀）、协议段与工具 schema', async () => {
@@ -240,7 +242,7 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
     expect(out.tools!.map((tool) => tool.name)).toEqual(['read'])
   })
 
-  it('两开关都 OFF：仅保留角色段 + Code Mode 协议段，清空其余（含 persona 前后缀）', async () => {
+  it('两开关都 OFF：仅保留角色段 + Code Mode 协议段 + 环境事实段，清空其余', async () => {
     const setup = createChildPromptSetup()
     const ctx = makeCtx()
     setup.bindParent(ctx, { systemPrompt: '父代理角色', injectSystemPrompt: false, injectToolSections: false }, 's')
@@ -248,7 +250,7 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
       ...officialSections(),
       { name: VISUAL_WORKFLOW_PROMPT_SECTION, text: '父代理角色' },
     ])
-    expectNames(out, [VISUAL_WORKFLOW_PROMPT_SECTION, SEC.sdk, SEC.ptcOnly, SEC.codeOnly])
+    expectNames(out, [VISUAL_WORKFLOW_PROMPT_SECTION, SEC.sdk, SEC.ptcOnly, SEC.codeOnly, SEC.personaSuffix])
     expect(out.contexts).toHaveLength(0)
     expect(out.tools).toBe(toolsIn)
     expect(out.tools!.map((tool) => tool.name)).toEqual(['read'])
@@ -268,6 +270,8 @@ describe('T-021 提示词注入装配 bindParent（父代理根 Agent）', () =>
           expect(names, label).toContain(SEC.sdk)
           expect(names, label).toContain(SEC.ptcOnly)
           expect(names, label).toContain(SEC.codeOnly)
+          // 环境事实段（工作目录）恒保留：任何人设/工具开关组合都不影响它
+          expect(names, label).toContain(SEC.personaSuffix)
           // tools[] 恒为同一引用（零改写）
           expect(out.tools, label).toBe(toolsIn)
           // tool:* 仅在 injectToolSections=false 时消失
@@ -356,7 +360,7 @@ describe('T-021b 子代理首轮角色 Prompt 注入（全局 unscoped 瀑布）
     expect(namesOf(out!)).toEqual([SEC.identity, SEC.toolRead])
   })
 
-  it('首轮组装时人设段 OFF：persona 前后缀一并清空', async () => {
+  it('首轮组装时人设段 OFF：官方散文段清空，环境事实段（persona 后缀）仍保留', async () => {
     const setup = createChildPromptSetup()
     const ctx = makeCtx()
     setup.registerGlobalAssemblyHook(ctx)
@@ -369,7 +373,7 @@ describe('T-021b 子代理首轮角色 Prompt 注入（全局 unscoped 瀑布）
     expect(names).toContain(VISUAL_WORKFLOW_PROMPT_SECTION)
     expect(names).not.toContain(SEC.identity)
     expect(names).not.toContain(SEC.personaPrefix)
-    expect(names).not.toContain(SEC.personaSuffix)
+    expect(names).toContain(SEC.personaSuffix)
     expect(names).toContain(SEC.sdk)
     expect(names).toContain(SEC.ptcOnly)
   })

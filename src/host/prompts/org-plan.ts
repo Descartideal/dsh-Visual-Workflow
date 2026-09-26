@@ -8,8 +8,8 @@
 //     其次才是「在既有模板/实例上继续规划」（targetId + expectRevision 的更新语义）；
 //   - 组装完成后**不自动投产**（D-11）：是否创建实例并运行由用户点击决定。
 //
-// 稳定布局（架构文档 §13.1）：首段硬约束 → 中段 L1 图语义 + 设计方法（长稳定文本）
-// → 末段动态状态（用户意图 / L3 用户 SOP 注入点 / 组织预算文本）。
+// 稳定布局：首段硬约束 → 中段目标与规则来源 → 末段动态状态（用户意图 / L3 用户 SOP
+// 注入点 / 组织预算文本）。
 // 构建器为纯函数：不读 Date.now / 随机源，同一 params 两次构建字节相同。
 //
 // 提示词裁剪原则（用户裁决 2026.09，按「这句是否必要」逐句过）：
@@ -19,7 +19,6 @@
 //   附修复建议）精确回指，写进提示词是纯 token 浪费。
 
 import { HEAD_MARKER, MID_MARKER, TAIL_MARKER, TAIL_RESTATE_MARKER } from './markers.js'
-import { ORG_SOP_DESIGN_METHOD, ORG_SOP_L1_GRAPH_SEMANTICS } from './org-sop.js'
 import { systemLanguageRule } from './prompt-rules.js'
 
 /**
@@ -40,8 +39,12 @@ export const ORG_PLAN_HARD_CONSTRAINTS = {
   createTemplate: "新建模板：提交 scope='template' 且带 create={name, description?, mode?} 的补丁，工具返回的 targetId 即新模板 id",
   /** 次用例：改既有目标（必须带 targetId 与 expectRevision）。 */
   updateTarget: "改既有目标：scope='template' 改模板、scope='instance' 改实例，且必须带 targetId 与 expectRevision",
-  /** 先勘察后动手：wf_org_catalog 是第一动作，且必须勘察工作区事实。 */
-  surveyFirst: "先勘察后动手：先调用 wf_org_catalog 摸清现有角色模板、组合、预设、模板库与组织预算，再勘察工作区事实（已有文件、技术栈、目录约定），最后才提交补丁",
+  /**
+   * 规则与资产来源：wf_org_catalog 是第一动作（规则全文 + 资产索引），其后才是工作区事实。
+   * 为什么必须保留：规则不再随本提示词注入——不调工具就拿不到图语义（group / proxy /
+   * 三通道连线等本插件自定义语义无法从训练数据推断），父代理会按通用直觉编排。
+   */
+  surveyFirst: "先取规则再动手：不传 ids 调用 wf_org_catalog 拿到编排规则（图语义与设计方法）与现有资产（角色模板、组合、预设、工作流模板库），再勘察工作区事实（已有文件、技术栈、目录约定），最后才提交补丁",
   /**
    * 工具可被用户关闭（P1 决策：两工具由组合管理统一开关、默认开启）。
    * 为什么必须保留：工具被关闭时模型收到的是 UNKNOWN_TOOL，没有这句它就不知道
@@ -103,6 +106,15 @@ function describeTarget(facts: OrgPlanPromptParams['facts']): { identity: string
 }
 
 /**
+ * 规则来源段：编排规则（图语义与设计方法）不再随本提示词注入，改由工具按需返回。
+ *
+ * 为什么换注入点：规则文本的单一事实源在提示词常量层，但规划期与运行期都需要它——
+ * 由 wf_org_catalog 返回既覆盖两个阶段，又不与工具返回重复占用上下文（用户裁决）。
+ */
+export const ORG_RULES_SOURCE_NOTE =
+  '编排规则（图语义与设计方法）由 wf_org_catalog 提供：不传 ids 调用它即可获得规则全文与资产索引，动笔前先取。'
+
+/**
  * 提交前自检（末段动态状态之前；不新增工具调用，只固化「下游知道去哪读」这条契约）。
  * 为什么放在末尾：与「关键约束重申」同位，处于注意力高位，且不污染稳定的前中段。
  */
@@ -143,9 +155,7 @@ export function buildOrgPlanPrompt(params: OrgPlanPromptParams): string {
     '',
     t.goal,
     '',
-    ORG_SOP_L1_GRAPH_SEMANTICS,
-    '',
-    ORG_SOP_DESIGN_METHOD,
+    ORG_RULES_SOURCE_NOTE,
   ].join('\n')
 
   const tail = [

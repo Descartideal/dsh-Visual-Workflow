@@ -201,7 +201,7 @@ export abstract class RuntimeBase {
   /**
    * 本会话在编运行已完成的门闸数（D-21：不含首次编排）。
    * 口径唯一来源是快照的 `milestoneUsed`（可审计 + 续跑继承），无活跃 run 时为 0。
-   * 供 wf_graph_patch 的闸门预算判定与 wf_org_catalog 的预算展示复用。
+   * 供 wf_graph_patch 的闸门预算判定复用。
    */
   milestoneUsedForSession(sessionId: string): number {
     const entry = this.activeRunForSession(sessionId)

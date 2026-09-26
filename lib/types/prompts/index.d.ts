@@ -6,4 +6,4 @@ export { buildCollabBlock, type CollabBlockParams, type CollabChannel } from './
 export { buildOrchestrationChangeText, ORCH_CHANGE_MARKER, type OrchestrationChangeParams, } from './orchestration-change.js';
 export { buildOrgBudgetText } from './org-budget.js';
 export { ORG_SOP_L1_GRAPH_SEMANTICS, ORG_SOP_DESIGN_METHOD } from './org-sop.js';
-export { buildOrgPlanPrompt, ORG_PLAN_HARD_CONSTRAINTS, type OrgPlanPromptParams, type OrgPlanTargetKind, } from './org-plan.js';
+export { buildOrgPlanPrompt, ORG_PLAN_HARD_CONSTRAINTS, ORG_RULES_SOURCE_NOTE, type OrgPlanPromptParams, type OrgPlanTargetKind, } from './org-plan.js';

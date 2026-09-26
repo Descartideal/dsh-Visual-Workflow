@@ -118,6 +118,9 @@ describe('补丁层 proxy data 归一化（applyGraphOps 纯函数）', () => {
 // 但它从未被生产代码调用且实现为字段白名单重写（会丢 meta/lastPatch 与未来新增字段），
 // 2026.10 治理中已删除。真正生效的补全入口是本模块的 normalizeRoleNodeData（父代理
 // 经 wf_graph_patch 建/改节点时的唯一规范化点），故其补全语义的断言收敛于此。
+// 另一条硬护栏同在 apply.ts：五个画布所有的字段（retryLimit / reactLimit / promptFilePath /
+// injectSystemPrompt / injectToolSections）对父代理不可配置——创建时剥离传入值并写系统
+// 默认，更新时剥离传入值并保留现值。
 
 describe('角色节点 data 补全（normalizeRoleNodeData）', () => {
   // 入参用严格契约 WorkflowDocument（applyGraphOps 输入类型）；出参 doc 是宽松的
@@ -132,7 +135,7 @@ describe('角色节点 data 补全（normalizeRoleNodeData）', () => {
     return (node as unknown as { data: Record<string, unknown> }).data
   }
 
-  it('create_node：模型只给 label/systemPrompt 时补全运行必需字段（presetId=null、retryLimit=3 等）', () => {
+  it('create_node：模型只给 label/systemPrompt 时补全运行必需字段（注入开关固定关闭）', () => {
     const { doc } = applyGraphOps({
       doc: flowOf([stage('s', 'start')]),
       ops: [{ op: 'create_node', node: { id: 'a1', kind: 'agent', position: { x: 0, y: 0 }, data: { label: '评审', systemPrompt: '你是评审' } } }],
@@ -148,25 +151,83 @@ describe('角色节点 data 补全（normalizeRoleNodeData）', () => {
     expect(data.inputSchema).toBe('')
     expect(data.outputSchema).toBe('')
     expect(data.groupId).toBeNull()
-    expect(data.injectSystemPrompt).toBe(true)
-    expect(data.injectToolSections).toBe(true)
+    // 官方系统提示词段与工具散文段固定关闭：父代理不可配置（画布属性栏所有）
+    expect(data.injectSystemPrompt).toBe(false)
+    expect(data.injectToolSections).toBe(false)
   })
 
-  it('create_node：显式空串 / 数字 / 布尔原样保留（只把 null/undefined 视为未提供）', () => {
+  it('create_node：可配置字段原样保留（空串 / 显式值不被归一覆盖）', () => {
     const { doc } = applyGraphOps({
       doc: flowOf([stage('s', 'start')]),
       ops: [{
         op: 'create_node',
         node: {
           id: 'a1', kind: 'agent', position: { x: 0, y: 0 },
-          data: { label: 'L', systemPrompt: '', provider: '', model: '', presetId: 'combo-x', retryLimit: 0, injectSystemPrompt: false },
+          data: { label: 'L', systemPrompt: '', provider: '', model: '', presetId: 'combo-x', reasoning: 'high', inputSchema: 'in' },
         },
       }],
     })
     const data = roleDataOf(doc, 'a1')
     expect(data.presetId).toBe('combo-x')
-    expect(data.retryLimit).toBe(0)
+    expect(data.reasoning).toBe('high')
+    expect(data.inputSchema).toBe('in')
+    expect(data.provider).toBe('')
+    expect(data.model).toBe('')
+  })
+
+  it('create_node：父代理传入的五个不可配置字段被剥离，一律写系统默认', () => {
+    const { doc } = applyGraphOps({
+      doc: flowOf([stage('s', 'start')]),
+      ops: [{
+        op: 'create_node',
+        node: {
+          id: 'a1', kind: 'agent', position: { x: 0, y: 0 },
+          data: {
+            label: 'L', systemPrompt: 'P',
+            retryLimit: 9, reactLimit: 5, promptFilePath: 'D:/role.md',
+            injectSystemPrompt: true, injectToolSections: true,
+          },
+        },
+      }],
+    })
+    const data = roleDataOf(doc, 'a1')
+    expect(data.retryLimit).toBe(3)
+    expect(data.reactLimit).toBeNull()
     expect(data.injectSystemPrompt).toBe(false)
+    expect(data.injectToolSections).toBe(false)
+    expect('promptFilePath' in data).toBe(false)
+  })
+
+  it('update_node_data：父代理传入的五个不可配置字段被剥离，保留节点现值（用户手动改过的值不被覆盖）', () => {
+    const manual: GraphNode = {
+      id: 'a1',
+      kind: 'agent',
+      position: { x: 0, y: 0 },
+      data: {
+        label: 'a1', systemPrompt: '', provider: '', model: '', presetId: null,
+        retryLimit: 7, reactLimit: 11, inputSchema: '', outputSchema: '', groupId: null,
+        promptFilePath: 'D:/role.md', injectSystemPrompt: true, injectToolSections: true,
+      },
+    }
+    const { doc } = applyGraphOps({
+      doc: flowOf([stage('s', 'start'), manual]),
+      ops: [{
+        op: 'update_node_data',
+        nodeId: 'a1',
+        data: {
+          label: '改后的名字',
+          retryLimit: 1, reactLimit: 2, promptFilePath: 'D:/other.md',
+          injectSystemPrompt: false, injectToolSections: false,
+        },
+      }],
+    })
+    const data = roleDataOf(doc, 'a1')
+    expect(data.label).toBe('改后的名字') // 可配置字段正常更新
+    expect(data.retryLimit).toBe(7) // 保留用户手动值
+    expect(data.reactLimit).toBe(11)
+    expect(data.promptFilePath).toBe('D:/role.md')
+    expect(data.injectSystemPrompt).toBe(true)
+    expect(data.injectToolSections).toBe(true)
   })
 
   it('update_node_data：补全不剥离未知字段（systemPromptSource 等展示字段保留）', () => {

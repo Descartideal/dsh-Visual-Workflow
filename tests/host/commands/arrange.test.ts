@@ -4,7 +4,8 @@
 //   1. 只采集 + 注入：命令 handler 只经 ctx.get('commands') 取服务、只 followup 一条用户消息，
 //      **不产生任何图变更**（不断言 store 写接口「没被调用」那么简单——直接断言 get 调用面
 //      只有 commands，即命令层根本没碰过数据层/运行时）；
-//   2. 提示词内容：三层 SOP（L1/L2 稳定段）+ 规划变体标记（HEAD/MID/TAIL）齐备；
+//   2. 提示词内容：规划变体标记（HEAD/MID/TAIL）齐备，且**不再注入规则正文**——规则改由
+//      wf_org_catalog 返回，注入文本里只给来源指引；
 //   3. 降级与错误：无命令面（headless/模式二）静默跳过；空意图给用法不注入；Agent 未激活给错误；
 //   4. 生命周期：register 的 disposer 被透传注销；消息 id 走注入缝（单测确定性）。
 import { describe, expect, it } from 'vitest'
@@ -20,6 +21,7 @@ import {
 import {
   HEAD_MARKER,
   MID_MARKER,
+  ORG_RULES_SOURCE_NOTE,
   TAIL_MARKER,
   ORG_SOP_L1_GRAPH_SEMANTICS,
   ORG_SOP_DESIGN_METHOD,
@@ -130,7 +132,7 @@ describe('/arrange handler：只采集 + 注入，绝不改图', () => {
     expect(messages[0].content[0].type).toBe('text')
   })
 
-  it('注入文本＝规划变体（HEAD/MID/TAIL 标记 + L1 图语义与设计方法稳定段）', () => {
+  it('注入文本＝规划变体（HEAD/MID/TAIL 标记 + 规则来源指引；规则正文由工具返回）', () => {
     const { ctx, registered } = makeCtx()
     registerArrangeCommand(ctx)
     const { agent, messages } = makeAgent()
@@ -139,8 +141,10 @@ describe('/arrange handler：只采集 + 注入，绝不改图', () => {
     expect(text).toContain(HEAD_MARKER)
     expect(text).toContain(MID_MARKER)
     expect(text).toContain(TAIL_MARKER)
-    expect(text).toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
-    expect(text).toContain(ORG_SOP_DESIGN_METHOD)
+    // 规则不再随 /arrange 注入（改由 wf_org_catalog 返回，规划期与运行期共用同一份）
+    expect(text).not.toContain(ORG_SOP_L1_GRAPH_SEMANTICS)
+    expect(text).not.toContain(ORG_SOP_DESIGN_METHOD)
+    expect(text).toContain(ORG_RULES_SOURCE_NOTE)
     expect(text).toContain('做一个内容生产流水线')
   })
 

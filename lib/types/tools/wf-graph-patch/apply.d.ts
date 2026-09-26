@@ -19,6 +19,29 @@ export declare function cloneDoc(doc: WorkflowDocument): WorkflowDocument;
  */
 export declare function ensureGroupConsistency(nodes: GraphNode[], groupId: string, memberIds: string[]): GraphNode[];
 /**
+ * 角色节点默认重试上限（父代理不可配置；与画布新建角色节点保持一致）。
+ */
+export declare const DEFAULT_ROLE_RETRY_LIMIT = 3;
+/**
+ * 父代理**不可配置**的角色节点字段（画布属性栏所有；用户裁决）。
+ *
+ * 为什么：这五个字段属于运行治理与提示词注入范畴——retryLimit / reactLimit 影响重试与
+ * ReAct 截停，promptFilePath 会把角色提示词指向宿主文件，injectSystemPrompt /
+ * injectToolSections 决定官方系统提示词段与工具散文段的注入。父代理无法判断取值后果，
+ * 因此一律不进入它的配置面：
+ *   - create_node：剥离传入值，按系统默认写入；
+ *   - update_node_data：剥离传入值，保留节点现值（用户手动改过的值不被覆盖）。
+ * 注意：关闭注入开关只影响散文段与 assembly.contexts（工具调用能力由 tools[] 决定），
+ * 且环境事实段（工作目录）不受该开关管辖。
+ */
+export declare const PARENT_UNCONFIGURABLE_ROLE_FIELDS: readonly ["retryLimit", "reactLimit", "promptFilePath", "injectSystemPrompt", "injectToolSections"];
+/**
+ * 创建路径的系统默认值（父代理传入的对应字段一律忽略）。
+ * 官方人设/系统散文段对节点子代理没有价值，只会与角色提示词重复，故注入开关固定关闭；
+ * 重试与 ReAct 上限取系统默认。
+ */
+export declare function applyRoleNodeCreateDefaults(raw: unknown): Record<string, unknown>;
+/**
  * 角色节点 data 补全（图结构补丁的**唯一规范化入口**）。
  *
  * 为什么必须有（2026.09 实机取证）：ops 是自由对象，`create_node` 只把 raw 原样落盘，

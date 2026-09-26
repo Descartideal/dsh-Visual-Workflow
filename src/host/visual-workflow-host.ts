@@ -563,9 +563,8 @@ export class VisualWorkflowHost extends Service {
     const ctx = this.ctx
     return {
       store: this.store,
-      toolSwitches: this.toolSwitches,
-      // 注：不再注入 listTools——节点工具集只由 presetId（工具组合/官方 preset）决定，
-      // 父代理无法点名工具，可用工具总清单对其没有决策价值（2026.09 决策）。
+      // 注：勘察工具只做静态资产盘点，因此不注入可用工具总清单（节点工具集只由 presetId
+      // 决定）、工具开关全量清单与运行态探针——工作流实例事实由运行期编排指令提供。
       // preset/模型清单的官方服务投影与 GUI 生态端点共用同一实现（ecosystem-directory），
       // 本处只做「工具需要的最小子集」收敛 + 勘察路径的 best-effort 降级。
       listPresets: async () => {
@@ -581,18 +580,16 @@ export class VisualWorkflowHost extends Service {
       listModels: async () => {
         try {
           const models = await listEcosystemModels(ctx)
-          return models.map((item) => ({ provider: item.provider, model: item.model }))
+          // 思考强度档位随模型一并透出（节点 data.reasoning 的取值来源）；适配器未公布时省略。
+          return models.map((item) => ({
+            provider: item.provider,
+            model: item.model,
+            ...(item.efforts && item.efforts.length > 0 ? { efforts: item.efforts } : {}),
+          }))
         } catch {
           return []
         }
       },
-      activeRunOf: (sessionId: string) => this.orchestrator.activeRunForSession(sessionId),
-      currentResolvedFlowOf: async (sessionId: string) => {
-        const entry = this.orchestrator.activeRunForSession(sessionId)
-        if (!entry) return null
-        return await this.orchestrator.currentResolvedFlow(entry)
-      },
-      touchRun: (sessionId: string) => { this.orchestrator.touchRunForSession(sessionId) },
       // 闸门计数（D-21）：口径唯一来源是运行快照的 milestoneUsed（P3 落地，可审计 + 续跑继承）
       milestoneUsedOf: (sessionId: string) => this.orchestrator.milestoneUsedForSession(sessionId),
       orchestrator: this.orchestrator,

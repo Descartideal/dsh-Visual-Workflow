@@ -3,11 +3,11 @@ import type { NodeKind } from './graph-model.js';
 export declare const EP_LIST_WORKFLOWS = "listWorkflows";
 /** 获取单个工作流。 */
 export declare const EP_GET_WORKFLOW = "getWorkflow";
-/** 保存工作流（含创建工作流。按 §4.6 清单逐字列出）。 */
+/** 保存工作流（含创建工作流）。 */
 export declare const EP_PUT_WORKFLOW = "putWorkflow";
 /** 删除工作流。 */
 export declare const EP_DELETE_WORKFLOW = "deleteWorkflow";
-/** 创建工作流（§4.6 清单逐字列出；与 putWorkflow 并存属于端点白名单）。 */
+/** 创建工作流（与 putWorkflow 并存属于端点白名单）。 */
 export declare const EP_CREATE_WORKFLOW = "createWorkflow";
 /** 服务列表端点名。 */
 export declare const EP_LIST_SERVICES = "listServices";
@@ -50,7 +50,7 @@ export declare const EP_PUT_FLOW_TEMPLATE = "putFlowTemplate";
 export declare const EP_DELETE_FLOW_TEMPLATE = "deleteFlowTemplate";
 /** 删除模板预览（角色/文件/数据库）。 */
 export declare const EP_DELETE_TEMPLATE_PREVIEW = "deleteTemplatePreview";
-/** 受管文件上传端点名（非文本文件：base64 内容 → data/files/ 受管拷贝，§4.2.4.1 规则 2）。 */
+/** 受管文件上传端点名（非文本文件：base64 内容 → data/files/ 受管拷贝）。 */
 export declare const EP_FILE_UPLOAD = "fileUpload";
 /** 官方预设列表端点名。 */
 export declare const EP_PRESETS = "presets";
@@ -128,7 +128,7 @@ export declare const PARENT_AGENT_VISIBLE_TOOLS: readonly ["wf_run_node", "wf_ru
  * 子代理永久隐藏工具集（双保险：resolveAgentTools 的 allow 名单剔除 +
  * child scope `tools.restrict({ deny })` 显式隐藏，两处均直接引用本常量）：
  * wf_run_node / wf_run_node_wait / wf_finish（仅父代理可调度）+ wf_org_catalog /
- * wf_graph_patch（自主编排方案 §4：勘察与改图都是「父代理的组织权限」，子代理不得改图）。
+ * wf_graph_patch（勘察与改图都是「父代理的组织权限」，子代理不得改图）。
  * 注意：全局工具开关（tool-switches）只影响「是否可见」，本集合是「永不进子代理」，
  * 两者正交——组合管理仍列出本集合工具（同一页面兼作全局开关面板），但永不随组合下发。
  */
@@ -190,13 +190,13 @@ export declare const DEFAULT_DISABLED_ON_FIRST_INSTALL: readonly ["spawn_teammat
 export declare const RESERVED_TRANSPORT_TOOL = "run_code";
 /**
  * 可选注入工具集（默认不注入任何代理，仅勾选/存在连线时按需进入子代理工具集）。
- *  - wf_ask：组合/白名单勾选时注入（需求文档 §4.6 规则 6）
- *  - wf_ask_agent：组合/白名单勾选时注入（协作组内通信，需求文档 §4.4.1 规则 5）
- *  - wf_db_query：存在数据库连线（db-in）时按连线自动注入（需求文档 §4.4.3 规则 5）
+ *  - wf_ask：组合/白名单勾选时注入
+ *  - wf_ask_agent：组合/白名单勾选时注入（协作组内通信）
+ *  - wf_db_query：存在数据库连线（db-in）时按连线自动注入
  */
 export declare const OPTIONAL_INJECT_TOOLS: readonly ["wf_ask", "wf_ask_agent", "wf_db_query"];
 /**
- * 工具可见性元数据总表：以「工具名 → 可见性描述」的统一视图汇总 §4.5 规则，
+ * 工具可见性元数据总表：以「工具名 → 可见性描述」的统一视图汇总各规则，
  * 供测试做关键规则断言与消费侧做静态判定（as const，零运行时 import）。
  */
 export declare const TOOL_VISIBILITY: {
@@ -219,27 +219,25 @@ export declare const TOOL_VISIBILITY: {
     readonly officialTeamLeadOnly: readonly ["spawn_teammate", "interrupt_agent"];
 };
 /**
- * 运行状态枚举（RUN_STATUSES）：与 ./run-types.js 的 RunStatus / 架构文档 §6.1
- * RunSnapshot.status 逐字一致（六态）。
+ * 运行状态枚举（RUN_STATUSES）：与 run-types.js 的 RunStatus 逐字一致（六态）。
  * running <-> paused -> completed / failed / stopped；宿主重启后
- * running/paused -> interrupted（可恢复）（架构文档 §4.3）。
- * 注意：pending 仅为**节点级**待执行状态（NODE_STATUSES，§6.1 nodes[].status），
+ * running/paused -> interrupted（可恢复）。
+ * 注意：pending 仅为**节点级**待执行状态（NODE_STATUSES），
  * 不作为 run 级持久化状态——run 快照创建即进入 running，不存在「排队/待启动」
- * 的持久化中间态（需求文档 §4.7 规则 3 断点数据字段同样不含 pending）。
+ * 的持久化中间态（断点数据字段同样不含 pending）。
  */
 export declare const RUN_STATUSES: readonly ["running", "paused", "completed", "failed", "stopped", "interrupted"];
 /**
- * 节点状态枚举（NODE_STATUSES）：与 ./run-types.js 的 NodeRunStatus /
- * 架构文档 §6.1 RunSnapshot.nodes[].status 逐字一致（七态，含协作组「待命」armed——
- * 非终态：回合结束但仍在协作组内可被唤醒，父代理 wf_finish 后终态化，P0-1）。
+ * 节点状态枚举（NODE_STATUSES）：与 run-types.js 的 NodeRunStatus 逐字一致（七态，含协作组「待命」armed——
+ * 非终态：回合结束但仍在协作组内可被唤醒，父代理 wf_finish 后终态化）。
  * react-capped 为 ReAct 软截停（非失败，正常产出）。
  * 与该类型的双向穷尽由测试的编译期断言锁定（禁止固定长度断言）。
  */
 export declare const NODE_STATUSES: readonly ["pending", "running", "armed", "ok", "fail", "skipped", "react-capped"];
-/** 模式枚举：mode1 编排执行 / mode2 后台服务（需求文档 §1 双模式架构）。 */
+/** 模式枚举：mode1 编排执行 / mode2 后台服务。 */
 export declare const MODES: readonly ["mode1", "mode2"];
 /**
- * 可执行单元节点种类（元参数规模统计口径，自主编排方案 §6.4）：
+ * 可执行单元节点种类（元参数规模统计口径）：
  * 子代理（agent）、父代理（parent）与协作组卡片（group，组内成员并行执行为一单元）。
  * 为什么放在协议常量层而不是纯形状层：该口径是 Host 检查器 / 写图工具 / 客户端预算
  * 展示共用的跨层契约常量，改一处必须三端一致；纯形状文件不得含运行时值。
@@ -259,7 +257,7 @@ export declare const COLOR_VAR_FAIL = "--wf-fail";
 /** 条件内容颜色变量（紫罗兰）。 */
 export declare const COLOR_VAR_CONTENT = "--wf-content";
 /**
- * 连线颜色变量名列表（按需求文档 §4.3 连线类型顺序：流程/上下文/数据库/通过/不通过/内容）。
+ * 连线颜色变量名列表（按连线类型顺序：流程/上下文/数据库/通过/不通过/内容）。
  * 供测试断言 6 个颜色变量齐全。
  */
 export declare const COLOR_VARS: readonly ["--wf-flow", "--wf-context", "--wf-database", "--wf-pass", "--wf-fail", "--wf-content"];
@@ -273,12 +271,11 @@ export declare const EP_SCHEDULER_TASK_DELETE = "schedulerTaskDelete";
  * 定时任务「常用时区」下拉建议列表（**唯一本体**）。
  *
  * 为什么放在共享协议层：该清单同时服务两端——host 侧的任务配置默认值/文档示例与
- * client 侧的下拉候选。此前 host（scheduler/task-config.ts 的 COMMON_TIMEZONES）与
- * client（SchedulerManager.tsx 的 TIMEZONE_SUGGESTIONS）各维护一份逐项相同的字面量，
- * 任一端增删都会静默漂移（AGENTS.md「同一语义只允许一处本体」）。
+ * client 侧的下拉候选。此前 host 与 client 各维护一份逐项相同的字面量，
+ * 任一端增删都会静默漂移（同一语义只允许一处本体）。
  *
  * 语义限定：这是**展示建议**，不是校验白名单——时区合法性一律由
- * `Intl.DateTimeFormat` 的 IANA 名称解析裁决（见 scheduler/calendar.ts），本列表
+ * `Intl.DateTimeFormat` 的 IANA 名称解析裁决，本列表
  * 只决定下拉里先给出哪些候选，用户可以填任意合法 IANA 时区。
  * 排序：按使用频次（Asia 主要时区 → 欧美 → UTC 兜底）。
  *

@@ -293,7 +293,7 @@ describe('wf_graph_patch · A 组图结构变更', () => {
   // 回归（2026.09）：create_node 曾把 raw.data 原样落盘，父代理最自然的写法
   // { kind:'agent', data:{ label, systemPrompt } } 会产出 presetId=undefined 的空壳节点，
   // 运行期 resolveAgentTools 判定为零工具集（连 read/write 都调不到）。
-  it('create_node：角色节点 data 缺省字段被补全（presetId 归一为 null、retryLimit/inject* 补默认）', async () => {
+  it('create_node：角色节点 data 缺省字段被补全（presetId 归一为 null、retryLimit 补默认、注入开关固定关闭）', async () => {
     const { applyGraphOps } = await import('../../../../src/host/tools/wf-graph-patch/apply.js')
     const applied = applyGraphOps({
       doc: makeFlow('wf-1', { nodes: [stageNode('s', 'start')], lines: [] }),
@@ -312,8 +312,8 @@ describe('wf_graph_patch · A 组图结构变更', () => {
       reactLimit: null,
       inputSchema: '',
       outputSchema: '',
-      injectSystemPrompt: true,
-      injectToolSections: true,
+      injectSystemPrompt: false,
+      injectToolSections: false,
       groupId: null,
     })
   })

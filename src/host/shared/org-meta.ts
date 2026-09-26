@@ -1,19 +1,18 @@
 // Host + Client 共享元参数类型（纯类型层，零 import）。
 //
-// 为什么独立成文件（见 ./AGENTS.md 纯度契约）：shared 层禁止任何运行时 import
+// 为什么独立成文件：shared 层禁止任何运行时 import
 // （仅允许 `import type`，编译期擦除），而「形状文件」不得定义运行时值。
 // 独立文件（零 import、纯类型）后：
-//   - graph-model.ts 可直接 `import type { OrgMeta } from './org-meta.js'`（纯类型、编译期擦除）；
-//   - types.ts 作为 type-only barrel 再导出（RunSnapshot.meta / ServiceState.meta 字段类型用），
-//     保持既有对外契约路径（`from './types.js'` 的 import 依旧可用）。
+//   - graph-model.ts 可直接 import type { OrgMeta }
+//   - types.ts 作为 type-only barrel 再导出，保持既有对外契约路径。
 //
-// 语义来源：docs/自主编排-实施方案.md §6.4（元参数七组字段）+ 决策台账 D-04/D-13/D-21。
-// 本文件**只放类型**：归一化/合并/超限判定等运行时纯函数在 src/host/graph/org-meta*.ts。
+// 语义来源：元参数七组字段 + 决策台账 D-04/D-13/D-21。
+// 本文件**只放类型**：归一化/合并/超限判定等运行时纯函数归 graph 模块。
 
 /**
- * 元参数（OrgMeta）：父代理自主编排的可调节参数（自主编排方案 §6.4 七组字段）。
+ * 元参数（OrgMeta）：父代理自主编排的可调节参数。
  * 全部字段可选——缺省即「不约束」，既有模板/实例不写 meta 时行为与此前完全一致。
- * 归一化会丢弃未知字段并把数值收敛到合理区间（见 graph/org-meta.ts）。
+ * 归一化会丢弃未知字段并把数值收敛到合理区间。
  */
 export interface OrgMeta {
   // ---- 一、规划规模 --------------------------------------------------------
@@ -32,7 +31,7 @@ export interface OrgMeta {
   // TODO(可视化可调项)：本节的 planFreedom / promptSource / roleGranularity / roleReuse /
   // interveneTrigger / askPerNodeMax / crossGroupPolicy 目前**只归一化与持久化，尚未接入行为**
   // （用户裁决 2026.09：与「组织规划提示词可调项」一起做成可视化 UI 旋钮后再接入）。
-  // 接入落点：提示词 → prompts/org-budget.ts；可机械判定的 → graph/org-meta-limits.ts。
+  // 接入落点：提示词模块；可机械判定的 → 对应校验模块。
   /** 规划自由度：只能选现成角色模板 / 允许派生新角色（软约束，提示词注入）。 */
   planFreedom?: 'templates-only' | 'allow-new-role'
   // ---- 二、角色招纳 --------------------------------------------------------
@@ -71,7 +70,7 @@ export interface OrgMeta {
 
 /**
  * 组织预算（元参数生效值 + 已用量 → 剩余量）。
- * 注入形态遵循「给剩余量而非上限」（自主编排方案 §6.4）：父代理看到的是「还能用多少」。
+ * 注入形态遵循「给剩余量而非上限」：父代理看到的是「还能用多少」。
  */
 export interface OrgBudget {
   /** 可执行节点（agent/parent/group）已用数。 */

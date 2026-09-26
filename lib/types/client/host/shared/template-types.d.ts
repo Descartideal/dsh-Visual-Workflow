@@ -32,9 +32,9 @@ export interface RoleTemplate {
     systemPromptSource?: string;
     /**
      * 官方系统提示词开关（默认 true；界面上是「人设段」开关）。
-     * false = 清空除角色段 / tool:* 散文段 / Code Mode 协议段之外的全部官方段与 runtime context。
-     * 设置角色 Prompt 时只替换 harness:identity + deployment:persona-prefix，
-     * deployment:persona-suffix（工作目录事实）仍保留；本开关 OFF 时它同样被清空。
+     * false = 清空除角色段 / tool:* 散文段 / Code Mode 协议段 / 环境事实段之外的全部官方散文段与 runtime context。
+     * 设置角色 Prompt 时只替换 harness:identity + deployment:persona-prefix。
+     * `deployment:persona-suffix`（工作目录事实）属环境事实，任何开关都不会清空它。
      */
     injectSystemPrompt?: boolean;
     /** 工具提示词（tool:* 散文段）注入开关（默认 true；false 仅移除 tool:* 段，保留 Code Mode 协议段与工具 Schema）。 */

@@ -15,8 +15,12 @@ export declare const ORG_PLAN_HARD_CONSTRAINTS: {
     readonly createTemplate: "新建模板：提交 scope='template' 且带 create={name, description?, mode?} 的补丁，工具返回的 targetId 即新模板 id";
     /** 次用例：改既有目标（必须带 targetId 与 expectRevision）。 */
     readonly updateTarget: "改既有目标：scope='template' 改模板、scope='instance' 改实例，且必须带 targetId 与 expectRevision";
-    /** 先勘察后动手：wf_org_catalog 是第一动作，且必须勘察工作区事实。 */
-    readonly surveyFirst: "先勘察后动手：先调用 wf_org_catalog 摸清现有角色模板、组合、预设、模板库与组织预算，再勘察工作区事实（已有文件、技术栈、目录约定），最后才提交补丁";
+    /**
+     * 规则与资产来源：wf_org_catalog 是第一动作（规则全文 + 资产索引），其后才是工作区事实。
+     * 为什么必须保留：规则不再随本提示词注入——不调工具就拿不到图语义（group / proxy /
+     * 三通道连线等本插件自定义语义无法从训练数据推断），父代理会按通用直觉编排。
+     */
+    readonly surveyFirst: "先取规则再动手：不传 ids 调用 wf_org_catalog 拿到编排规则（图语义与设计方法）与现有资产（角色模板、组合、预设、工作流模板库），再勘察工作区事实（已有文件、技术栈、目录约定），最后才提交补丁";
     /**
      * 工具可被用户关闭（P1 决策：两工具由组合管理统一开关、默认开启）。
      * 为什么必须保留：工具被关闭时模型收到的是 UNKNOWN_TOOL，没有这句它就不知道
@@ -49,6 +53,13 @@ export interface OrgPlanPromptParams {
         orgBudgetText?: string;
     };
 }
+/**
+ * 规则来源段：编排规则（图语义与设计方法）不再随本提示词注入，改由工具按需返回。
+ *
+ * 为什么换注入点：规则文本的单一事实源在提示词常量层，但规划期与运行期都需要它——
+ * 由 wf_org_catalog 返回既覆盖两个阶段，又不与工具返回重复占用上下文（用户裁决）。
+ */
+export declare const ORG_RULES_SOURCE_NOTE = "\u7F16\u6392\u89C4\u5219\uFF08\u56FE\u8BED\u4E49\u4E0E\u8BBE\u8BA1\u65B9\u6CD5\uFF09\u7531 wf_org_catalog \u63D0\u4F9B\uFF1A\u4E0D\u4F20 ids \u8C03\u7528\u5B83\u5373\u53EF\u83B7\u5F97\u89C4\u5219\u5168\u6587\u4E0E\u8D44\u4EA7\u7D22\u5F15\uFF0C\u52A8\u7B14\u524D\u5148\u53D6\u3002";
 /**
  * 构建规划期父代理提示词（纯函数）。
  * @param params facts（目标种类/身份/语言）+ dynamic（用户意图/L3 SOP/预算文本）

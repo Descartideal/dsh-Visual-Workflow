@@ -65,13 +65,14 @@ export {
 // 「本次组织预算」末段文本构建器（动态值，仅末段注入；由 runtime-launch 接入）。
 export { buildOrgBudgetText } from './org-budget.js'
 
-// 规划 SOP 文本（L1 图语义 / 设计方法；长稳定文本段）。
+// 规划 SOP 文本（图语义 / 设计方法；长稳定文本段）：唯一消费方是 wf_org_catalog 的索引返回。
 export { ORG_SOP_L1_GRAPH_SEMANTICS, ORG_SOP_DESIGN_METHOD } from './org-sop.js'
 
-// 规划期父代理提示词变体：首段硬约束 → 中段 L1+设计方法 → 末段动态（用户意图 / L3 SOP / 预算）。
+// 规划期父代理提示词变体：首段硬约束 → 中段目标与规则来源 → 末段动态（用户意图 / L3 SOP / 预算）。
 export {
   buildOrgPlanPrompt,
   ORG_PLAN_HARD_CONSTRAINTS,
+  ORG_RULES_SOURCE_NOTE,
   type OrgPlanPromptParams,
   type OrgPlanTargetKind,
 } from './org-plan.js'
