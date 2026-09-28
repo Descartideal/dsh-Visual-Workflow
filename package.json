@@ -28,7 +28,8 @@
     "cordis.patch.yml",
     "serve.patch.yml",
     "assets/models/bge-small-zh-v1.5",
-    "README.md"
+    "README.md",
+    "COMPATIBILITY.md"
   ],
   "dsh": {
     "bundle": {

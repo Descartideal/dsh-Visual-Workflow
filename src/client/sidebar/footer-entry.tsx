@@ -47,6 +47,11 @@ export interface SidebarRightLike {
   openTab?(kind: string, options?: unknown): void
   /** 当前是否有挂载的会话面板（无 seat 时 undefined）。 */
   active?(): unknown
+  /** 0.1.7+: the mounted Session seat is published after its React effect runs. */
+  mounted?: {
+    getSnapshot?(): unknown
+    subscribe?(listener: () => void): () => void
+  }
 }
 
 /** 官方 layout 服务的最小形状（仅用于「先回到会话界面」的兜底导航）。 */
@@ -82,6 +87,24 @@ export function createWorkbenchOpener(ctx: { get?(name: string): unknown }): () 
     } catch {
       // layout 服务异常：忽略（重试仍会尽力）
     }
+    const mounted = sidebarRight.mounted
+    if (typeof mounted?.getSnapshot === 'function' && typeof mounted.subscribe === 'function') {
+      let disposed = false
+      let unsubscribe: (() => void) | undefined
+      const openWhenMounted = (): void => {
+        if (disposed || !mounted.getSnapshot?.()) return
+        disposed = true
+        unsubscribe?.()
+        clearTimeout(timeout)
+        try { sidebarRight.openTab?.(WORKBENCH_TAB_KIND) } catch { /* seat was released again */ }
+      }
+      const timeout = setTimeout(() => { disposed = true; unsubscribe?.() }, 5000)
+      unsubscribe = mounted.subscribe(openWhenMounted)
+      if (disposed) unsubscribe()
+      openWhenMounted()
+      return
+    }
+    // 0.1.6: no mounted observable; retry after the navigation render.
     setTimeout(() => {
       try {
         sidebarRight.openTab?.(WORKBENCH_TAB_KIND)

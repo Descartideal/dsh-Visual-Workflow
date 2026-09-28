@@ -1,2 +1,4 @@
 # 统一行尾，消除 Windows 下的 CRLF 告警
 * text=auto
+assets/models/bge-small-zh-v1.5/** text eol=lf
+assets/models/bge-small-zh-v1.5/onnx/model_quantized.onnx -text

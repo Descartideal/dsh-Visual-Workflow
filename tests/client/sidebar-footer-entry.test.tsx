@@ -165,6 +165,32 @@ describe('createWorkbenchOpener：打开工作台标签页', () => {
     expect(openTab).toHaveBeenCalledTimes(2)
   })
 
+  it('0.1.7 挂载状态延后发布时，等 seat 真正挂载后再打开', () => {
+    vi.useFakeTimers()
+    let sessionId: string | undefined
+    let notify: (() => void) | undefined
+    const unsubscribe = vi.fn()
+    const openTab = vi.fn(() => {
+      if (!sessionId) throw new Error('sidebarRight: no session surface is mounted')
+    })
+    const mounted = {
+      getSnapshot: () => sessionId,
+      subscribe: (listener: () => void) => { notify = listener; return unsubscribe },
+    }
+    const selectPanel = vi.fn()
+    const opener = createWorkbenchOpener({
+      get: (name: string) => name === 'sidebarRight' ? { openTab, mounted } : name === 'layout' ? { selectPanel } : null,
+    })
+    opener()
+    vi.advanceTimersByTime(100)
+    expect(openTab).toHaveBeenCalledTimes(1)
+    expect(selectPanel).toHaveBeenCalledWith(null)
+    sessionId = 'session-1'
+    notify?.()
+    expect(openTab).toHaveBeenCalledTimes(2)
+    expect(unsubscribe).toHaveBeenCalledTimes(1)
+  })
+
   it('重试仍失败：静默吞掉（不把宿主异常抛进 React 事件处理）', () => {
     vi.useFakeTimers()
     const openTab = vi.fn(() => { throw new Error('boom') })

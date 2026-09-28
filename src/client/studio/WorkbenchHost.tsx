@@ -48,11 +48,16 @@ export function WorkbenchHost({ ctx, t }: { ctx: WorkbenchHostContext; t: Dict }
   // 会话变化时跟随（需求 §4.5.7：仅更新「当前」标签与新建实例的目标会话，不重置界面）
   useEffect(() => {
     const sessions = ctx.get?.('sessions') as SessionsServiceLike | null | undefined
-    const off = sessions?.list?.subscribe?.(() => {
-      setSessionId(rootSessionOf(ctx))
-    })
+    const mounted = (ctx.get?.('sidebarRight') as {
+      mounted?: { subscribe?: (listener: () => void) => () => void }
+    } | null)?.mounted
+    const refresh = (): void => { setSessionId(rootSessionOf(ctx)) }
+    const off = sessions?.list?.subscribe?.(refresh)
+    const offMounted = mounted?.subscribe?.(refresh)
+    refresh()
     return () => {
       off?.()
+      offMounted?.()
     }
   }, [ctx])
 

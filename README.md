@@ -211,10 +211,10 @@
 
 ## 安装（Windows）
 
-> **版本适配**：本插件适配 **DeepSeek Harness `0.1.6-alpha.2`**（宿主侧提示词段名、子代理投递 API、会话 cwd 读取与客户端插槽均按该版本取证适配；`0.1.5-rc.1` 仍兼容——客户端会话读缝双读兼容 `snapshot.current` 与 `retainedBy.mainView` 派生）。请先安装或升级宿主（升级前先在外部终端**完全停止 dsh 进程**）：
+> **版本适配**：此分支针对 **DeepSeek Harness `0.1.7-rc.2`** 验证，同时保留 `0.1.6-alpha.2` 的客户端挂载与会话快照回退路径。`0.1.7-rc.2` 将右侧栏的 `mounted()` 改为可订阅的 `mounted` 快照；插件从全局面板返回会话时会等待该快照发布后再打开工作台，并以实际挂载的会话决定新工作流的归属。升级宿主前请先在外部终端**完全停止 dsh 进程**：
 >
 > ```bash
-> npm install -g @deepseek-ai/dsh@0.1.6-alpha.2
+> npm install -g @deepseek-ai/dsh@0.1.7-rc.2
 > ```
 
 1. **文件管理器定位**：`%USERPROFILE%\.dsh\profiles\web\pnpm-workspace.yaml`,在其中添加：
@@ -229,8 +229,12 @@ allowBuilds:
 2. **运行插件安装命令**:
 
 ```bash
-dsh plugin --profile web add "github:GZX2211/dsh-Visual-Workflow#main"
+dsh plugin --profile web add "github:Descartideal/dsh-Visual-Workflow#compat/dsh-0.1.7-rc.2"
 ```
+
+上述命令安装已适配的 fork 分支；原项目位于 [GZX2211/dsh-Visual-Workflow](https://github.com/GZX2211/dsh-Visual-Workflow)。
+
+版本差异与适配范围见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 3. **验证挂载**：（可选）
 
@@ -340,7 +344,7 @@ pnpm install
 dsh plugin --profile web add "link:$PWD"
 ```
 
-> 开发/验证目标宿主版本：**`@deepseek-ai/dsh@0.1.6-alpha.2`**（升级前先完全停止 dsh 进程；`0.1.5-rc.1` 兼容保留）。
+> 开发/验证目标宿主版本：**`@deepseek-ai/dsh@0.1.7-rc.2`**；`0.1.6-alpha.2` 的旧式右侧栏回退路径保留。
 
 常用命令：
 ```bash

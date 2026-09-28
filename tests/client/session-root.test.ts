@@ -55,6 +55,17 @@ function sessions016Of(
 }
 
 describe('currentSessionOf：当前选中会话解析', () => {
+  it('0.1.7 mounted seat takes precedence over an older retained mainView', () => {
+    const sessions = sessions016Of([
+      { id: 'older', mainView: 1 },
+      { id: 'visible', mainView: 1 },
+    ])
+    expect(currentSessionOf({
+      get: (name) => name === 'sidebarRight'
+        ? { mounted: { getSnapshot: () => 'visible' } }
+        : sessions,
+    })).toBe('visible')
+  })
   it('getSnapshot().current 命中（0.1.5 读法）', () => {
     expect(currentSessionOf({ get: () => sessionsOf([{ id: 's-1' }], { current: 's-9' }) })).toBe('s-9')
   })

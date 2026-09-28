@@ -72,6 +72,10 @@ function mainViewSessionOf(snapshot: SessionsSnapshotLike | undefined): string {
  * @returns 当前会话 id，或空串。
  */
 export function currentSessionOf(ctx: { get?(name: string): unknown }): string {
+  // 0.1.7 publishes the actual mounted right-sidebar seat. It disambiguates
+  // multiple retained mainView sessions and updates after navigation commits.
+  const mounted = (ctx.get?.('sidebarRight') as { mounted?: { getSnapshot?: () => unknown } } | null)?.mounted?.getSnapshot?.()
+  if (typeof mounted === 'string' && mounted) return mounted
   const sessions = ctx.get?.('sessions') as SessionsServiceLike | null | undefined
   const snapshot = snapshotOf(sessions)
   const current = snapshot?.current
