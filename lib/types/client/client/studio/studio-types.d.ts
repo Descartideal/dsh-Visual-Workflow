@@ -1,10 +1,13 @@
 import type { WorkflowDocument, WorkflowTemplate } from '../../host/shared/graph-model.js';
 import type { ServiceState, RoleTemplate, FileTemplate, DatabaseTemplate, GroupTemplate, ToolCombo, RunSnapshot } from '../../host/shared/types.js';
+import type { AssetKind, AssetVersionEntry, RoleAssetDetail, RoleAssetSummary, WorkflowAssetDetail, WorkflowAssetSummary } from '../../host/shared/asset-types.js';
 import type { CanvasEdge, CanvasNode } from '../lib/canvas-model.js';
 /** 左侧栏 Tab（需求 §4.5.4：工作流 / 角色 / 数据（文件+数据库）/ 其他（阶段+协作组））。 */
 export type LibTab = 'workflow' | 'role' | 'data' | 'other';
-/** 左侧库选中种类（模板 kind + 固定卡片 + 工作流模板）。 */
-export type LibSelKind = 'workflow' | 'service' | 'workflowTemplate' | 'role' | 'file' | 'database' | 'parentTemplate' | 'stage' | 'groupTemplate';
+/** 左侧库来源：模版（可随意修改的草稿）/ 资产（带版本控制的晋升形态）。 */
+export type LibrarySource = 'template' | 'asset';
+/** 左侧库选中种类（模板 kind + 固定卡片 + 工作流模板 + 资产）。 */
+export type LibSelKind = 'workflow' | 'service' | 'workflowTemplate' | 'role' | 'file' | 'database' | 'parentTemplate' | 'stage' | 'groupTemplate' | 'flowAsset' | 'roleAsset';
 /** 模板种类（与后端 listTemplates 契约一致；group 为协作组模板，需求 §4.2.5.2）。 */
 export type TemplateKind = 'role' | 'file' | 'database' | 'group';
 /**
@@ -57,6 +60,12 @@ export type EditorRef = {
     id: string;
 } | {
     source: 'flowTemplate';
+    id: string;
+} | {
+    source: 'flowAsset';
+    id: string;
+} | {
+    source: 'roleAsset';
     id: string;
 } | {
     source: 'template';
@@ -115,6 +124,25 @@ export interface StudioState {
     sessionId: string;
     /** 左侧栏 Tab。 */
     libTab: LibTab;
+    /** 左侧库来源（模版 / 资产）：切换同时切左侧库来源与画布文档类型。 */
+    librarySource: LibrarySource;
+    /** 库搜索关键词（两态常驻、共用同一关键词；过滤当前 Tab 下全部分区卡片）。 */
+    libSearch: string;
+    /** 资产列表（Active 版本索引；模版态不使用，资产态左栏数据源）。 */
+    assets: {
+        workflows: WorkflowAssetSummary[];
+        roles: RoleAssetSummary[];
+    };
+    /** 资产态画布打开的资产文档（画布节点/连线的事实源；未打开为 null）。 */
+    assetDoc: WorkflowAssetDetail | null;
+    /** 资产态属性栏编辑的角色资产详情（打开/拖入角色资产时装载）。 */
+    assetRoleDoc: RoleAssetDetail | null;
+    /** 回滚上拉列表数据（打开时装载，关闭置空）。 */
+    assetVersions: {
+        kind: AssetKind;
+        assetId: string;
+        items: AssetVersionEntry[];
+    } | null;
     /** 当前编辑对象模式（新建草稿的默认模式）。 */
     mode: 'mode1' | 'mode2';
     workflows: WorkflowDocument[];
@@ -143,9 +171,9 @@ export interface StudioState {
     presets: PresetItem[];
     tools: ToolItem[];
     models: ModelItem[];
-    /** 当前画布对象（工作流/服务实例，或工作流模板）。 */
+    /** 当前画布对象（工作流/服务实例，或工作流模板，或工作流资产文档）。 */
     currentId: string | null;
-    currentKind: 'workflow' | 'service' | 'flowTemplate' | null;
+    currentKind: 'workflow' | 'service' | 'flowTemplate' | 'flowAsset' | null;
     canvas: {
         nodes: CanvasNode[];
         edges: CanvasEdge[];
@@ -193,6 +221,12 @@ export interface EditorData {
     templateId?: string;
     /** 角色模板/节点是否为父代理（模式仅 preset + 高级项裁剪，§4.2.3.1）。 */
     isParent?: boolean;
+    /** 工作流资产来源标记（属性栏按资产语义渲染；保存/退役由 T6 接线）。 */
+    asset?: boolean;
+    /** 角色资产来源标记（同上）。 */
+    roleAsset?: boolean;
+    /** 资产 id（保存新版本 / 回滚 / 退役按此定位；与当前画布 currentId 同源）。 */
+    assetId?: string;
     /** 画布节点 id（node 来源编辑器）。 */
     nodeId?: string;
     /** 虚拟节点主节点名称。 */

@@ -138,6 +138,28 @@ export const EP_EXPORT_AGENT_TEMPLATE = 'exportAgentTemplate'
 export const EP_IMPORT_AGENT_TEMPLATE = 'importAgentTemplate'
 
 // ---------------------------------------------------------------------------
+// 资产（Asset）端点名常量
+// ---------------------------------------------------------------------------
+// 语义：「资产」是模版的晋升形态，带版本控制与回滚；模版是可随意修改的草稿。
+// 资产库落盘为 SQLite（<dataDir>/assets.db），与模版 JSON 文件是两套事实源，
+// 端点只暴露资产事实，不承担「模版何时该晋升」的业务判断。
+
+/** 列出资产端点名（按 kind 取 Active 版本索引：工作流资产 / 角色资产）。 */
+export const EP_LIST_ASSETS = 'listAssets'
+/** 取单个资产端点名（Active 版本详情；属性栏编辑与资产态画布打开共用）。 */
+export const EP_GET_ASSET = 'getAsset'
+/** 资产入库端点名（模版 → 资产版本；同一模版再次入库即同一 asset 的新版本）。 */
+export const EP_PROMOTE_ASSET = 'promoteAsset'
+/** 资产态保存端点名（登记该资产的新版本；不覆盖历史版本）。 */
+export const EP_SAVE_ASSET_VERSION = 'saveAssetVersion'
+/** 资产版本列表端点名（回滚上拉列表；含 Active 标记）。 */
+export const EP_LIST_ASSET_VERSIONS = 'listAssetVersions'
+/** 资产回滚端点名（改 Active 指针指向历史版本；不新增版本）。 */
+export const EP_ROLLBACK_ASSET = 'rollbackAsset'
+/** 资产退役端点名（Active 移除、历史版本保留；UI 侧二次确认）。 */
+export const EP_RETIRE_ASSET = 'retireAsset'
+
+// ---------------------------------------------------------------------------
 // wf_* 工具名常量
 // ---------------------------------------------------------------------------
 
@@ -157,6 +179,11 @@ export const WF_DB_QUERY = 'wf_db_query'
 export const WF_ORG_CATALOG = 'wf_org_catalog'
 /** 父代理自主编排的写图工具名（两组：图结构 / 运行状态标记）。 */
 export const WF_GRAPH_PATCH = 'wf_graph_patch'
+/**
+ * 经验入库工具名（父代理；复盘后提交经验候选 → 官方多选卡片 → 用户确认后原子落库）。
+ * 调用者必须是主会话父代理（子代理经 CHILD_AGENT_HIDDEN_TOOLS 永久隐藏）。
+ */
+export const WF_EXPERIENCE = 'wf_experience'
 
 // ---------------------------------------------------------------------------
 // 工具可见性元数据
@@ -187,7 +214,14 @@ export const CHILD_AGENT_HIDDEN_TOOLS = [
   WF_FINISH,
   WF_ORG_CATALOG,
   WF_GRAPH_PATCH,
+  WF_EXPERIENCE, // 经验入库是「父代理的复盘权限」，子代理不得写经验库
 ] as const
+
+/**
+ * 元编排自进化工具集（父代理专属）：经验入库（wf_experience）。
+ * 与 ORG_AUTHORING_TOOLS 同口径——默认开启、子代理永久隐藏、工具内二次校验调用者身份。
+ */
+export const META_EVOLUTION_TOOLS = [WF_EXPERIENCE] as const
 
 /**
  * 自主编排工具集（**默认开启**，与其他工具同口径；由用户在组合管理中按需关闭）：
@@ -304,6 +338,8 @@ export const TOOL_VISIBILITY = {
   optionalInject: OPTIONAL_INJECT_TOOLS,
   /** 自主编排工具集（wf_org_catalog / wf_graph_patch；默认开启、父代理专属，可经全局工具开关关闭）。 */
   orgAuthoring: ORG_AUTHORING_TOOLS,
+  /** 元编排自进化工具集（wf_experience；父代理专属，子代理永久隐藏）。 */
+  metaEvolution: META_EVOLUTION_TOOLS,
   /**
    * 官方 Agent Team 工具集（9 个）：由官方包注册在 Team 成员作用域，插件不注册、不转写；
    * 插件只把它作为「全局工具开关」与组合管理列表的目标集。禁止进入任何 restrict allow/deny 名单。
@@ -454,4 +490,23 @@ export const SCHEDULER_TIMEZONE_SUGGESTIONS: readonly string[] = [
 
 /** 乐观锁冲突：资源在客户端加载后已被别的写入修改（HTTP 409）。 */
 export const ERR_REVISION_CONFLICT = 'FLOW_REVISION_CONFLICT'
+
+/**
+ * 资产不存在（Active 索引里没有该 asset_id / 该资产已退役），HTTP 404。
+ * 消费方语义：客户端提示「资产已退役或不存在」并刷新资产列表。
+ */
+export const ERR_ASSET_NOT_FOUND = 'WF_ASSET_NOT_FOUND'
+
+/** 资产版本不存在（回滚目标版本号非法），HTTP 404。 */
+export const ERR_ASSET_VERSION_NOT_FOUND = 'WF_ASSET_VERSION_NOT_FOUND'
+
+/**
+ * 资产重复登记被拦截（HTTP 409）。
+ * 触发场景（用户裁决）：standalone 角色资产与已有 standalone 角色资产 system_prompt 全等
+ * ——直接取消当次入库；工作流资产与已有工作流资产内容全等——同样取消。
+ */
+export const ERR_ASSET_DUPLICATE = 'WF_ASSET_DUPLICATE'
+
+/** 资产入参非法（kind/assetId/版本号/载荷形状），HTTP 400。 */
+export const ERR_ASSET_BAD_ARGS = 'WF_ASSET_BAD_ARGS'
 

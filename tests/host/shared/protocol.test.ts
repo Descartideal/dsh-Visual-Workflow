@@ -31,6 +31,7 @@ import {
   WF_ASK,
   WF_ASK_AGENT,
   WF_DB_QUERY,
+  WF_EXPERIENCE,
   WF_FINISH,
   WF_RUN_NODE,
 } from '../../../src/host/shared/protocol.js'
@@ -76,6 +77,8 @@ const EXPECTED_ENDPOINTS: string[] = [
   'exportWorkflow', 'importWorkflow', 'exportAgentTemplate', 'importAgentTemplate',
   // 定时任务（新功能本阶段；需求见 prompt/定时任务开发.md）
   'schedulerTasks', 'schedulerTaskPut', 'schedulerTaskDelete',
+  // 资产（模版的晋升形态：入库 / 资产态保存 / 版本 / 回滚 / 退役）
+  'listAssets', 'getAsset', 'promoteAsset', 'saveAssetVersion', 'listAssetVersions', 'rollbackAsset', 'retireAsset',
 ]
 
 /**
@@ -93,10 +96,10 @@ function readProtocolEndpoints(): string[] {
 }
 
 describe('shared/protocol 端点清单', () => {
-  it('端点常量定义 52 个且无重复', () => {
+  it('端点常量定义 59 个且无重复', () => {
     const eps = readProtocolEndpoints()
-    expect(eps).toHaveLength(52)
-    expect(new Set(eps).size).toBe(52) // 52 端点名全部唯一（无重复常量）
+    expect(eps).toHaveLength(59)
+    expect(new Set(eps).size).toBe(59) // 59 端点名全部唯一（无重复常量）
   })
 
   it('端点名逐字覆盖 §4.6 清单（正反向双向一致）', () => {
@@ -161,6 +164,14 @@ describe('shared/protocol 工具名常量与可见性', () => {
     for (const t of CHILD_AGENT_HIDDEN_TOOLS) {
       expect(OPTIONAL_INJECT_TOOLS).not.toContain(t)
     }
+  })
+
+  it('元编排自进化工具（wf_experience）：父代理专属，子代理永久隐藏', () => {
+    // 经验入库是「父代理的复盘权限」：子代理拿到也只会污染经验库，故与自主编排工具同口径隐藏。
+    expect(WF_EXPERIENCE).toBe('wf_experience')
+    expect(CHILD_AGENT_HIDDEN_TOOLS).toContain(WF_EXPERIENCE)
+    expect(TOOL_VISIBILITY.metaEvolution).toEqual([WF_EXPERIENCE])
+    expect(OPTIONAL_INJECT_TOOLS).not.toContain(WF_EXPERIENCE)
   })
 
   it('官方 Agent Team 工具集：9 个齐全、Lead 专属与子代理可用子集互补且不重叠', () => {

@@ -1,6 +1,7 @@
 import { Context, Service } from '@deepseek-ai/cordis';
 import type { Config } from './config.js';
 import { FlowStore } from './storage/flow-store.js';
+import { AssetStore } from './assets/index.js';
 import { OrchestratorRuntime, type RootAgentLike } from './orchestrator/index.js';
 import { CordisAgentHost, NodeAgentRunner } from './agent/index.js';
 import { ToolSwitchStore } from './tools/index.js';
@@ -18,6 +19,13 @@ export declare class VisualWorkflowHost extends Service {
     readonly config: Config;
     /** FlowStore 实例（dataDir 落盘数据层）。 */
     readonly store: FlowStore;
+    /**
+     * 资产库（SQLite；资产与经验两类事实的唯一持久化持有者）。
+     * 私有：对外只经 `assets` getter 与各能力缝暴露，避免绕过可用性判定直接用未初始化的库。
+     */
+    private readonly assetStore;
+    /** 资产库是否就绪（init 成功）。 */
+    private assetStoreReady;
     /** 编排运行时（运行锁/快照/状态机/wait 阻塞/暂停门）。 */
     readonly orchestrator: OrchestratorRuntime;
     /** 节点子代理执行引擎（startContinuable 创建/签名复用/白名单解析）。 */
@@ -133,6 +141,17 @@ export declare class VisualWorkflowHost extends Service {
     }): Promise<unknown>;
     /** 数据根目录（数据工具索引落盘位置）。 */
     get dataDir(): string;
+    /**
+     * 资产库（API 边界缝；未就绪时为 undefined，资产端点据此返回 501）。
+     * 为什么不让边界直接拿 AssetStore：可用性判定只能有一处，端点不得使用未初始化的库。
+     */
+    get assets(): AssetStore | undefined;
+    /**
+     * 取资产库，未就绪时抛可行动错误。
+     * 为什么抛错而不是返回空集：目录勘察把「库不可用」伪装成「没有资产」会让父代理基于空目录
+     * 做出错误编排（与既有「核心清单读失败必须上抛」同口径）。
+     */
+    private requireAssetStore;
     /** 服务 apiKey（调试流式代理鉴权用；密钥仅 Host 持有，不下发浏览器）。 */
     get apiKey(): string | null;
     /** 嵌入引擎（数据工具向量检索用）。 */

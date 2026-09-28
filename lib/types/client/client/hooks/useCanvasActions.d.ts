@@ -1,5 +1,6 @@
 import type { Dispatch } from 'react';
 import type { StudioAction, StudioState } from '../studio/studio-state.js';
+import type { RoleAssetDetail } from '../../host/shared/asset-types.js';
 import type { GraphHistoryFace } from './useGraphHistory.js';
 import type { ToastFace } from './useToast.js';
 import type { SaveCanvasOptions } from './useDocumentActions.js';
@@ -34,6 +35,11 @@ export interface CanvasActionsFace {
     removeNodeNow(id: string): void;
     removeLine(id: string): void;
     placeTemplateNode(kind: 'role' | 'file' | 'database', templateId: string, position: {
+        x: number;
+        y: number;
+    }): void;
+    /** 角色资产拖入画布：生成内联角色节点并写入来源资产 id（sourceAssetId）。 */
+    placeRoleAssetNode(detail: RoleAssetDetail, position: {
         x: number;
         y: number;
     }): void;

@@ -15,6 +15,7 @@ import { webServerOf } from '../web-server.js'
 import { mixInEndpointGroups, VisualWorkflowApiBase, type ApiHost } from './boundary.js'
 import { WorkflowEndpoints } from './workflows.js'
 import { TemplateEndpoints } from './templates.js'
+import { AssetEndpoints } from './assets.js'
 import { EcosystemEndpoints } from './ecosystem.js'
 import { CatalogEndpoints } from './catalog.js'
 import { RunEndpoints } from './runs.js'
@@ -26,6 +27,7 @@ export class VisualWorkflowApi extends VisualWorkflowApiBase {}
 mixInEndpointGroups(VisualWorkflowApi, [
   WorkflowEndpoints,
   TemplateEndpoints,
+  AssetEndpoints,
   EcosystemEndpoints,
   CatalogEndpoints,
   RunEndpoints,
@@ -47,6 +49,10 @@ const ERROR_STATUS: Record<string, number> = {
   TRANSFER_INVALID_JSON: 400,
   TRANSFER_INVALID_BUNDLE: 422,
   TRANSFER_NOT_FOUND: 404,
+  [EP.ERR_ASSET_BAD_ARGS]: 400,
+  [EP.ERR_ASSET_NOT_FOUND]: 404,
+  [EP.ERR_ASSET_VERSION_NOT_FOUND]: 404,
+  [EP.ERR_ASSET_DUPLICATE]: 409,
 }
 
 /** 响应状态：传输层错误自带 status 优先；否则按稳定 code 表；无法识别为 500。 */

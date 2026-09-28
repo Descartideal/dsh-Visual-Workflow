@@ -7,6 +7,7 @@
 import type { StudioState, EditorData, CanvasNode } from './studio-types.js'
 import type { WorkflowDocument, WorkflowTemplate } from '../../host/shared/graph-model.js'
 import type { ServiceState } from '../../host/shared/types.js'
+import type { WorkflowAssetDetail } from '../../host/shared/asset-types.js'
 
 /** 当前工作流文档（内存列表优先；草稿回退）。 */
 export function currentFlowOf(state: StudioState): WorkflowDocument | null {
@@ -18,6 +19,20 @@ export function currentFlowOf(state: StudioState): WorkflowDocument | null {
 export function currentFlowTemplateOf(state: StudioState): WorkflowTemplate | null {
   if (state.currentKind !== 'flowTemplate' || !state.currentId) return null
   return state.flowTemplates.find((template) => template.id === state.currentId) ?? null
+}
+
+/** 当前工作流资产文档（资产态画布；当前 id 必须与已装载的 assetDoc 同源）。 */
+export function currentFlowAssetOf(state: StudioState): WorkflowAssetDetail | null {
+  if (state.currentKind !== 'flowAsset' || !state.currentId) return null
+  return state.assetDoc?.assetId === state.currentId ? state.assetDoc : null
+}
+
+/**
+ * 模板态与资产态共用「创建实例」前置（实例只能由模版/资产生成）：
+ * 二者画布内容语义一致（编辑中的草稿 → 保存为实例），运行入口也走同一分支。
+ */
+export function isInstanceSourceKind(kind: StudioState['currentKind']): boolean {
+  return kind === 'flowTemplate' || kind === 'flowAsset'
 }
 
 /** 当前服务文档。 */
@@ -86,6 +101,30 @@ export function editorDataOf(state: StudioState): EditorData | null {
     return template
       ? { kind: 'workflow', data: { name: template.name, description: template.description }, name: template.name, template: true, templateId: template.id }
       : null
+  }
+  if (editor.source === 'flowAsset') {
+    const detail = state.assetDoc
+    if (!detail || detail.assetId !== editor.id) return null
+    return {
+      kind: 'workflow',
+      data: { name: detail.name, description: detail.description },
+      name: detail.name,
+      asset: true,
+      assetId: detail.assetId,
+    }
+  }
+  if (editor.source === 'roleAsset') {
+    const detail = state.assetRoleDoc
+    if (!detail || detail.assetId !== editor.id) return null
+    // 角色资产详情与 RoleTemplate 字段同域：直接作为属性栏 role 表单的数据源投影
+    return {
+      kind: 'role',
+      data: detail as unknown as Record<string, unknown>,
+      name: detail.name,
+      isParent: detail.kind === 'parent',
+      roleAsset: true,
+      assetId: detail.assetId,
+    }
   }
   if (editor.source === 'service') {
     const service = state.services.find((item) => item.id === editor.id)

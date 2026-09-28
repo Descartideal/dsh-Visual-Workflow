@@ -9,7 +9,7 @@
 import { useCallback } from 'react'
 import type { Dispatch } from 'react'
 import type { StudioAction, StudioState } from '../studio/studio-state.js'
-import { currentFlowOf, currentFlowTemplateOf, currentServiceOf } from '../studio/studio-state.js'
+import { currentFlowOf, currentFlowTemplateOf, currentFlowAssetOf, currentServiceOf, isInstanceSourceKind } from '../studio/studio-state.js'
 import type { RemoteFace } from './useRemote.js'
 import type { RunControlFace } from './useRunControl.js'
 import type { ServiceControlFace } from './useServiceControl.js'
@@ -43,9 +43,9 @@ export function useRunActions(
   // ---------- 运行（模式一） ----------
   const startRun = useCallback(async () => {
     if (state.mode !== 'mode1') return
-    // 模板态：运行前自动「创建实例」（含开启新会话/覆盖确认）再运行——
+    // 模板态 / 资产态：运行前自动「创建实例」（含开启新会话/覆盖确认）再运行——
     // 创建是异步的（可能弹确认框），后续启动统一经 afterCreate 回调接续。
-    if (state.currentKind === 'flowTemplate') {
+    if (isInstanceSourceKind(state.currentKind)) {
       void createInstanceFromCanvas((created) => {
         const flow = created as import('../../host/shared/graph-model.js').WorkflowDocument
         const hasStart = state.canvas.nodes.some((node) => node.kind === 'start')
@@ -123,10 +123,10 @@ export function useRunActions(
 
   // ---------- 模式二服务 ----------
   const startService = useCallback(async () => {
-    // 模板态：运行前自动「创建服务实例」（含开启新会话/覆盖确认）再启动——
+    // 模板态 / 资产态：运行前自动「创建服务实例」（含开启新会话/覆盖确认）再启动——
     // 与模式一模板运行语义一致；后续启动统一经 afterCreate 回调接续。
-    if (state.currentKind === 'flowTemplate') {
-      const template = currentFlowTemplateOf(state)
+    if (isInstanceSourceKind(state.currentKind)) {
+      const template = currentFlowTemplateOf(state) ?? currentFlowAssetOf(state)
       if (!template) return
       const hasInput = state.canvas.nodes.some((node) => node.kind === 'start')
       const hasOutput = state.canvas.nodes.some((node) => node.kind === 'end')

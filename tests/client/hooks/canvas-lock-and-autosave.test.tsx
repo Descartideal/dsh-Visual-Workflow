@@ -169,6 +169,7 @@ async function renderEditorFace(overrides: {
     (overrides.templates ?? {}) as never,
     {} as never,
     {} as never,
+    {} as never,
     async () => null,
     noop as never,
     noop as never,

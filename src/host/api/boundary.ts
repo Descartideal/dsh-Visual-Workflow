@@ -11,12 +11,70 @@
 // 只依赖本基座，最终类按显式清单汇聚原型方法（见 routes.ts）。
 
 import * as EP from '../shared/protocol.js'
+import type { AssetPromoteResult, AssetStore } from '../assets/index.js'
 import type { FlowStore } from '../storage/flow-store.js'
 import type { OrchestratorRuntime } from '../orchestrator/index.js'
 import type { EmbeddingEngine } from '../embedding/engine.js'
 import type { SchedulerEngine, SchedulerTaskStore } from '../scheduler/index.js'
 import type { ToolSwitchStore } from '../tools/index.js'
+import type {
+  AssetVersionEntry,
+  RoleAssetDetail,
+  RoleAssetSummary,
+  WorkflowAssetDetail,
+  WorkflowAssetSummary,
+} from '../shared/asset-types.js'
+import type { RoleTemplate } from '../shared/template-types.js'
+import type { GraphNode, Line, WorkflowMode } from '../shared/graph-model.js'
+import type { OrgMeta } from '../shared/org-meta.js'
 import { httpError } from './http.js'
+
+/**
+ * 入库/保存结果的能力缝形状：字段仍取自资产库的 AssetPromoteResult，只是不要求
+ * sharedRoleAssetIds（资产库内部合并明细，且工作流路径不返回）——边界不消费该字段。
+ */
+type PromoteResult = Pick<AssetPromoteResult, 'assetId' | 'versionId' | 'rowId' | 'unchanged' | 'roleAssetType'>
+
+/**
+ * 资产库能力缝（api 边界消费的最小结构，字段类型全部取自共享资产契约）。
+ * 为什么本层声明而不是直接把字段写成 AssetStore：能力缝表达的是「边界需要什么」，
+ * 资产库多出的方法（经验读写等）不属边界依赖；两者的一致性由下方编译期结构校验守住。
+ */
+interface AssetStoreLike {
+  listRoleAssets(): Promise<RoleAssetSummary[]>
+  getRoleAsset(assetId: string): Promise<RoleAssetDetail | null>
+  listRoleVersions(assetId: string): Promise<AssetVersionEntry[]>
+  rollbackRoleAsset(assetId: string, versionId: number): Promise<RoleAssetDetail>
+  retireRoleAsset(assetId: string): Promise<void>
+  listWorkflowAssets(): Promise<WorkflowAssetSummary[]>
+  getWorkflowAsset(assetId: string): Promise<WorkflowAssetDetail | null>
+  listWorkflowVersions(assetId: string): Promise<AssetVersionEntry[]>
+  rollbackWorkflowAsset(assetId: string, versionId: number): Promise<WorkflowAssetDetail>
+  retireWorkflowAsset(assetId: string): Promise<void>
+  promoteRole(input: { templateId: string; fingerprint: string; role: RoleTemplate; source: 'human' | 'agent' }): Promise<PromoteResult>
+  promoteWorkflow(input: {
+    templateId: string
+    fingerprint: string
+    mode: WorkflowMode
+    name: string
+    description: string
+    nodes: GraphNode[]
+    lines: Line[]
+    meta?: OrgMeta
+    source: 'human' | 'agent'
+  }): Promise<PromoteResult>
+  saveRoleVersion(input: { assetId: string; role: RoleTemplate; source: 'human' | 'agent' }): Promise<PromoteResult>
+  saveWorkflowVersion(input: {
+    assetId: string
+    mode: WorkflowMode
+    name: string
+    description: string
+    nodes: GraphNode[]
+    lines: Line[]
+    meta?: OrgMeta
+    source: 'human' | 'agent'
+  }): Promise<PromoteResult>
+}
 
 /** 宿主能力缝（index.ts 装配；单测 fake）。 */
 export interface ApiHost {
@@ -42,7 +100,17 @@ export interface ApiHost {
   schedulerTaskStore?: SchedulerTaskStore
   /** 全局工具开关存储（经 tools 模块公共入口取得；缺失时开关端点返回 501）。 */
   toolSwitches?: ToolSwitchStore
+  /** 资产库能力缝（宿主注入 assets 模块的 AssetStore；缺失时资产端点返回 501）。 */
+  assets?: AssetStoreLike
 }
+
+/**
+ * 编译期结构校验：资产库公共入口的实现必须满足本能力缝；任一签名漂移都在这里报错，
+ * 使「宿主注入 AssetStore」这件事可被类型系统守住（无运行时开销）。
+ */
+type AssertAssetStoreFits = AssetStore extends AssetStoreLike ? true : never
+const assetStoreFits: AssertAssetStoreFits = true
+void assetStoreFits
 
 /**
  * GUI API 分发基座：按端点名分发（白名单禁止命中原型链方法）。

@@ -1,11 +1,11 @@
 // src/host/tools/wf-org-catalog/build.ts
 //
 // wf_org_catalog 的**纯函数装配层**：把工具层已取到的数据组装成索引/详情返回体。
-// 不触盘、不读时钟、不读全局——同一入参必同输出。
+// 不触盘、不读时钟、不读全局——同一入参必同输出（需要外部事实时一律经回调注入）。
 //
 // 关键契约（用户裁决）：骨架必须自足——不可二次召回的内容（阶段节点、协作组配置、
 // 连线、数据节点正文与连接信息）一次性给全，保证「索引 + 多次详情召回」能拼出与
-// 工作流文件等价的完整信息；**唯一按需召回的长字段是角色 systemPrompt**，由骨架里的
+// 工作流资产等价的完整信息；**唯一按需召回的长字段是角色 systemPrompt**，由骨架里的
 // 复合 id 指向。
 
 import { labelOf } from '../../orchestrator/index.js'
@@ -15,6 +15,8 @@ import { CATALOG_LIMITS, ID_CONVENTION, INLINE_ROLE_SEPARATOR } from './types.js
 import type {
   CatalogComboEntry,
   CatalogDatabaseNodeEntry,
+  CatalogExperienceDetail,
+  CatalogExperienceIndexEntry,
   CatalogFileNodeEntry,
   CatalogGroupNodeEntry,
   CatalogIndex,
@@ -27,24 +29,34 @@ import type {
   CatalogPresetSource,
   CatalogProxyNodeEntry,
   CatalogRoleDetail,
-  CatalogRoleEntry,
   CatalogRoleNodeEntry,
   CatalogStageNodeEntry,
-  CatalogTemplateEntry,
   CatalogWorkflowDetail,
+  RoleAssetEntry,
+  WorkflowAssetEntry,
 } from './types.js'
-import type { GraphNode, Line, RoleNode, WorkflowTemplate } from '../../shared/graph-model.js'
+import type {
+  ExperienceEntry,
+  RoleAssetDetail,
+  RoleAssetSummary,
+  WorkflowAssetDetail,
+  WorkflowAssetRoleRef,
+  WorkflowAssetSummary,
+} from '../../shared/asset-types.js'
+import type { GraphNode, Line, RoleNode } from '../../shared/graph-model.js'
 
 /** 索引里的召回指引：目录是候选清单而非全部内容，详情按 ids 召回。 */
 export const DETAIL_HINT =
-  '再次调用本工具并传 ids 可召回详情：["tpl-xxx"]=工作流完整骨架；["role-xxx"]=角色完整 systemPrompt；'
-  + '["tpl-xxx#node-yyy"]=该工作流模板内联角色的完整 systemPrompt。'
+  '索引里的资产与经验只是**候选**（名称 / 描述 / 任务上下文），完整内容必须再次调用本工具并传 ids 召回：'
+  + '["flow-xxx"]=工作流资产完整骨架；["role-xxx"]=角色资产完整 systemPrompt；'
+  + '["flow-xxx#node-yyy"]=该工作流资产内联角色固定引用版本的完整 systemPrompt；["ex-xxx"]=经验完整 insight + evidence。'
   + '骨架已含阶段节点、协作组配置、连线与数据节点正文（这些没有二次召回通道），'
   + '唯一按需召回的长字段是角色 systemPrompt。ids 中的坏 id 只单条报错，不影响其余。'
 
-/** 骨架返回体里的提示：角色提示词走复合 id 按需召回。 */
+/** 骨架返回体里的提示：角色提示词走复合 id 按需召回；角色版本无法解析时的取舍。 */
 export const WORKFLOW_DETAIL_NOTE =
   'nodes 中角色节点（kind=agent|parent）的 systemPrompt 未包含：按 inlineRoles 里的复合 id 逐个召回。'
+  + 'roleAssetId / roleVersionId 是该节点固定引用的角色资产与版本；角色版本行已无法解析时这两个字段省略（骨架其余字段不受影响）。'
 
 /** 数据库连接里不进模型上下文的密钥字段。 */
 const SECRET_CONNECTION_KEYS = ['password'] as const
@@ -71,24 +83,36 @@ function trimmedOrNull(value: unknown): string | null {
   return text ? text : null
 }
 
-/** 组装资产索引（第一次调用）。 */
+/**
+ * 节点 → 角色资产引用的解析结果。
+ * `assetId` 为 null 表示角色版本行存在但无法回溯到资产 id（历史数据残缺）：
+ * 此时只给 versionId，让模型至少知道「这个节点钉的是哪一版」。
+ */
+export interface ResolvedRoleRef {
+  assetId: string | null
+  versionId: number
+}
+
+/** 组装资产与经验索引（第一次调用）。 */
 export function buildIndex(input: {
-  roles: Array<Record<string, unknown>>
+  workflows: WorkflowAssetSummary[]
+  roles: RoleAssetSummary[]
+  experiences: CatalogExperienceIndexEntry[]
   combos: Array<Record<string, unknown>>
   presets: CatalogPresetSource[]
   models: CatalogModelSource[]
-  templates: WorkflowTemplate[]
 }): CatalogIndex {
-  const roleEntries = input.roles.map(roleEntryOf).filter((entry) => entry.id)
+  const workflowEntries = input.workflows.map(workflowAssetEntryOf).filter((entry) => entry.id)
+  const roleEntries = input.roles.map(roleAssetEntryOf).filter((entry) => entry.id)
   const comboEntries = input.combos.map(comboEntryOf).filter((entry) => entry.id)
   const presetEntries = input.presets.map(presetEntryOf).filter((entry) => entry.id)
   const modelEntries = input.models.map(modelEntryOf).filter((entry) => entry.provider || entry.model)
-  const templateEntries = input.templates.map(templateEntryOf).filter((entry) => entry.id)
-  const roles = clipList(roleEntries, CATALOG_LIMITS.roles)
+  const workflows = clipList(workflowEntries, CATALOG_LIMITS.workflowAssets)
+  const roles = clipList(roleEntries, CATALOG_LIMITS.roleAssets)
+  const experiences = clipList(input.experiences, CATALOG_LIMITS.experiences)
   const combos = clipList(comboEntries, CATALOG_LIMITS.combos)
   const presets = clipList(presetEntries, CATALOG_LIMITS.presets)
   const models = clipList(modelEntries, CATALOG_LIMITS.models)
-  const templates = clipList(templateEntries, CATALOG_LIMITS.templates)
   return {
     kind: 'index',
     idConvention: ID_CONVENTION,
@@ -96,25 +120,61 @@ export function buildIndex(input: {
     combos: combos.items,
     presets: presets.items,
     models: models.items,
-    roles: roles.items,
-    templates: templates.items,
+    assets: { workflows: workflows.items, roles: roles.items },
+    experiences: experiences.items,
     rules: {
       graphSemantics: ORG_SOP_L1_GRAPH_SEMANTICS,
       designMethod: ORG_SOP_DESIGN_METHOD,
       patchContract: PATCH_CONTRACT_TEXT,
       gateMarking: GATE_MARKING_SEMANTICS,
     },
-    truncated: roles.truncated || combos.truncated || presets.truncated || models.truncated || templates.truncated,
+    truncated:
+      workflows.truncated
+      || roles.truncated
+      || experiences.truncated
+      || combos.truncated
+      || presets.truncated
+      || models.truncated,
   }
 }
 
-function roleEntryOf(role: Record<string, unknown>): CatalogRoleEntry {
+function workflowAssetEntryOf(asset: WorkflowAssetSummary): WorkflowAssetEntry {
+  const id = textOf(asset.assetId)
   return {
-    id: textOf(role.id),
-    name: textOf(role.name),
-    kind: role.kind === 'parent' ? 'parent' : 'agent',
-    summary: clip(role.systemPrompt ?? role.description ?? '', CATALOG_LIMITS.roleSummary),
+    id,
+    name: trimmedOrNull(asset.name) ?? id,
+    description: textOf(asset.description),
+    versionId: Number(asset.versionId) || 0,
   }
+}
+
+/**
+ * 角色资产索引条目。
+ * 摘要是「够不够拿来参考」的判据，由资产库在列表查询里 JOIN 当前 Active 版本行产出
+ * （systemPrompt 前 60 字 + 截断标记，见 `src/host/assets/role-assets.ts`），此处**原样透传**：
+ * 两侧各自截断会让 `…（已截断）` 标记叠加。摘要缺失即空串（不编造职责描述），
+ * 完整提示词始终可按 id 召回。
+ */
+function roleAssetEntryOf(asset: RoleAssetSummary): RoleAssetEntry {
+  const id = textOf(asset.assetId)
+  return {
+    id,
+    name: trimmedOrNull(asset.name) ?? id,
+    kind: asset.kind === 'parent' ? 'parent' : 'agent',
+    versionId: Number(asset.versionId) || 0,
+    roleAssetType: roleAssetTypeOf(asset.roleAssetType),
+    summary: textOf(asset.summary),
+  }
+}
+
+/**
+ * 角色资产类型收窄。
+ * 未知值按 `standalone` 处理：与资产模块对「未知 role_asset_type」的降级方向一致
+ * （同一事实的两处收窄不得给出不同答案）。
+ */
+function roleAssetTypeOf(value: unknown): RoleAssetEntry['roleAssetType'] {
+  if (value === 'inline' || value === 'shared') return value
+  return 'standalone'
 }
 
 /**
@@ -152,28 +212,45 @@ function modelEntryOf(model: CatalogModelSource): CatalogModelEntry {
   }
 }
 
-function templateEntryOf(template: WorkflowTemplate): CatalogTemplateEntry {
-  return {
-    id: textOf(template.id),
-    name: textOf(template.name) || textOf(template.id),
-    description: textOf(template.description),
+/**
+ * 节点 → 角色版本行引用映射。
+ * 工作流资产的节点内容由角色版本行 join 而来，引用清单是节点与角色资产之间唯一的
+ * 对应关系；同一节点出现多条引用时取首条（AssetStore 按节点唯一写入，多条属脏数据）。
+ */
+function roleRefMapOf(refs: WorkflowAssetRoleRef[] | undefined): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const ref of refs ?? []) {
+    const nodeId = textOf(ref?.nodeId).trim()
+    const rowId = textOf(ref?.roleVersionId).trim()
+    if (nodeId && rowId && !map.has(nodeId)) map.set(nodeId, rowId)
   }
+  return map
 }
 
-/** 组装工作流骨架（`tpl-*` 的返回体）。 */
-export function buildWorkflowDetail(template: WorkflowTemplate): CatalogWorkflowDetail {
-  const nodes = (template.nodes ?? []) as GraphNode[]
-  const id = textOf(template.id)
+/** 组装工作流资产骨架（`flow-*` 的返回体）。 */
+export function buildWorkflowDetail(
+  asset: WorkflowAssetDetail,
+  roleRefOf?: (roleRowId: string) => ResolvedRoleRef | null,
+): CatalogWorkflowDetail {
+  const nodes = (asset.nodes ?? []) as GraphNode[]
+  const id = textOf(asset.assetId)
+  const refs = roleRefMapOf(asset.roleVersionIds)
+  const roleNodeEntryOf = (node: RoleNode): CatalogRoleNodeEntry => {
+    const rowId = refs.get(node.id)
+    const resolved = rowId && roleRefOf ? roleRefOf(rowId) : null
+    return roleNodeEntry(node, resolved?.assetId ?? undefined, resolved?.versionId)
+  }
   return {
     type: 'workflow',
     id,
-    name: textOf(template.name) || id,
-    description: textOf(template.description),
-    mode: template.mode === 'mode2' ? 'mode2' : 'mode1',
-    revision: Number(template.revision) || 0,
-    ...(template.meta && Object.keys(template.meta).length > 0 ? { meta: template.meta } : {}),
-    nodes: nodes.map(nodeEntryOf),
-    lines: (template.lines ?? []).map(lineEntryOf),
+    assetId: id,
+    versionId: Number(asset.versionId) || 0,
+    name: trimmedOrNull(asset.name) ?? id,
+    description: textOf(asset.description),
+    mode: asset.mode === 'mode2' ? 'mode2' : 'mode1',
+    ...(asset.meta && Object.keys(asset.meta).length > 0 ? { meta: asset.meta } : {}),
+    nodes: nodes.map((node) => nodeEntryOf(node, roleNodeEntryOf)),
+    lines: (asset.lines ?? []).map(lineEntryOf),
     inlineRoles: nodes
       .filter((node) => node.kind === 'agent' || node.kind === 'parent')
       .map((node) => `${id}${INLINE_ROLE_SEPARATOR}${node.id}`),
@@ -181,28 +258,40 @@ export function buildWorkflowDetail(template: WorkflowTemplate): CatalogWorkflow
   }
 }
 
-/** 组装角色模板详情（systemPrompt 完整返回，不截断）。 */
-export function buildRoleDetail(role: Record<string, unknown>): CatalogRoleDetail {
-  const reasoning = trimmedOrNull(role.reasoning)
-  const promptSource = trimmedOrNull(role.systemPromptSource)
+/** 组装角色资产详情（systemPrompt 完整返回，不截断）。 */
+export function buildRoleDetail(asset: RoleAssetDetail): CatalogRoleDetail {
+  const id = textOf(asset.assetId)
+  const reasoning = trimmedOrNull(asset.reasoning)
+  const promptSource = trimmedOrNull(asset.systemPromptSource)
   return {
     type: 'role',
-    id: textOf(role.id),
-    name: textOf(role.name) || textOf(role.id),
-    kind: role.kind === 'parent' ? 'parent' : 'agent',
-    presetId: trimmedOrNull(role.presetId),
-    provider: textOf(role.provider),
-    model: textOf(role.model),
+    id,
+    assetId: id,
+    versionId: Number(asset.versionId) || 0,
+    roleAssetType: roleAssetTypeOf(asset.roleAssetType),
+    name: trimmedOrNull(asset.name) ?? id,
+    kind: asset.kind === 'parent' ? 'parent' : 'agent',
+    presetId: trimmedOrNull(asset.presetId),
+    provider: textOf(asset.provider),
+    model: textOf(asset.model),
     ...(reasoning ? { reasoning } : {}),
-    inputSchema: textOf(role.inputSchema),
-    outputSchema: textOf(role.outputSchema),
+    inputSchema: textOf(asset.inputSchema),
+    outputSchema: textOf(asset.outputSchema),
     ...(promptSource ? { systemPromptSource: promptSource } : {}),
-    systemPrompt: textOf(role.systemPrompt),
+    systemPrompt: textOf(asset.systemPrompt),
   }
 }
 
-/** 组装模板内联角色详情（标明所属工作流与节点，避免多角色召回时混淆）。 */
-export function buildInlineRoleDetail(input: { containerId: string; node: RoleNode }): CatalogInlineRoleDetail {
+/**
+ * 组装工作流资产内联角色详情（标明所属工作流与节点，避免多角色召回时混淆）。
+ * 内容来自该节点在角色资产里的**固定引用版本**（不是该资产的 Active 版本）。
+ */
+export function buildInlineRoleDetail(input: {
+  containerId: string
+  node: RoleNode
+  roleAssetId?: string
+  roleVersionId?: number
+}): CatalogInlineRoleDetail {
   const data = input.node.data
   const reasoning = trimmedOrNull(data.reasoning)
   const promptSource = trimmedOrNull(data.systemPromptSource)
@@ -211,6 +300,8 @@ export function buildInlineRoleDetail(input: { containerId: string; node: RoleNo
     id: `${input.containerId}${INLINE_ROLE_SEPARATOR}${input.node.id}`,
     containerId: input.containerId,
     nodeId: input.node.id,
+    ...(input.roleAssetId ? { roleAssetId: input.roleAssetId } : {}),
+    ...(input.roleVersionId !== undefined ? { roleVersionId: input.roleVersionId } : {}),
     label: textOf(data.label),
     presetId: trimmedOrNull(data.presetId),
     provider: textOf(data.provider),
@@ -224,8 +315,27 @@ export function buildInlineRoleDetail(input: { containerId: string; node: RoleNo
   }
 }
 
+/** 组装经验详情（insight 与 evidence 完整返回，不截断：经验本体就是这两段文本）。 */
+export function buildExperienceDetail(experience: ExperienceEntry): CatalogExperienceDetail {
+  const evidence = trimmedOrNull(experience.evidence)
+  const reviewFeedback = trimmedOrNull(experience.reviewFeedback)
+  const sourceRunId = trimmedOrNull(experience.sourceRunId)
+  return {
+    type: 'experience',
+    id: textOf(experience.id),
+    taskType: textOf(experience.taskType),
+    taskContext: textOf(experience.taskContext),
+    insight: textOf(experience.insight),
+    ...(evidence ? { evidence } : {}),
+    ...(reviewFeedback ? { reviewFeedback } : {}),
+    ...(sourceRunId ? { sourceRunId } : {}),
+    createdAt: Number(experience.createdAt) || 0,
+    updatedAt: Number(experience.updatedAt) || 0,
+  }
+}
+
 /**
- * 数据库连接脱敏：密钥字段替换为占位符，其余字段原样保留（保证模板可复用）。
+ * 数据库连接脱敏：密钥字段替换为占位符，其余字段原样保留（保证资产可复用）。
  * 为什么必须脱敏：连接信息没有二次召回通道，必须一次性给出；而密码一旦进入模型
  * 上下文与对话历史就无法收回。
  */
@@ -238,8 +348,33 @@ export function maskConnection(conn: unknown): Record<string, unknown> | undefin
   return out
 }
 
+/** 角色节点条目（不可召回字段给全；systemPrompt 走复合 id 按需召回）。 */
+function roleNodeEntry(node: RoleNode, roleAssetId?: string, roleVersionId?: number): CatalogRoleNodeEntry {
+  const data = node.data
+  const reasoning = trimmedOrNull(data.reasoning)
+  const promptSource = trimmedOrNull(data.systemPromptSource)
+  return {
+    id: node.id,
+    kind: node.kind,
+    label: labelOf(node),
+    presetId: trimmedOrNull(data.presetId),
+    provider: textOf(data.provider),
+    model: textOf(data.model),
+    ...(reasoning ? { reasoning } : {}),
+    inputSchema: textOf(data.inputSchema),
+    outputSchema: textOf(data.outputSchema),
+    ...(promptSource ? { systemPromptSource: promptSource } : {}),
+    groupId: data.groupId ?? null,
+    ...(roleAssetId ? { roleAssetId } : {}),
+    ...(roleVersionId !== undefined ? { roleVersionId } : {}),
+  }
+}
+
 /** 节点条目（按 kind 判别；字段取舍见 CatalogNodeEntry 的说明）。 */
-function nodeEntryOf(node: GraphNode): CatalogNodeEntry {
+function nodeEntryOf(
+  node: GraphNode,
+  roleNodeEntryOf: (node: RoleNode) => CatalogRoleNodeEntry,
+): CatalogNodeEntry {
   switch (node.kind) {
     case 'start':
     case 'end':
@@ -248,25 +383,8 @@ function nodeEntryOf(node: GraphNode): CatalogNodeEntry {
       return entry
     }
     case 'agent':
-    case 'parent': {
-      const data = node.data
-      const reasoning = trimmedOrNull(data.reasoning)
-      const promptSource = trimmedOrNull(data.systemPromptSource)
-      const entry: CatalogRoleNodeEntry = {
-        id: node.id,
-        kind: node.kind,
-        label: labelOf(node),
-        presetId: trimmedOrNull(data.presetId),
-        provider: textOf(data.provider),
-        model: textOf(data.model),
-        ...(reasoning ? { reasoning } : {}),
-        inputSchema: textOf(data.inputSchema),
-        outputSchema: textOf(data.outputSchema),
-        ...(promptSource ? { systemPromptSource: promptSource } : {}),
-        groupId: data.groupId ?? null,
-      }
-      return entry
-    }
+    case 'parent':
+      return roleNodeEntryOf(node)
     case 'proxy': {
       const entry: CatalogProxyNodeEntry = {
         id: node.id,

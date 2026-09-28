@@ -31,6 +31,12 @@ export declare abstract class RuntimeBase {
     protected readonly adopting: Map<string, Promise<RunEntry | null>>;
     /** flowId 级续跑去重（同会话多 flow 交错时的二次收口）。 */
     protected readonly resuming: Map<string, Promise<ResumeResult | null>>;
+    /**
+     * 复盘指令已注入的 runId 集合（终态注入幂等）：
+     * 内存条目删除后重复终态调用走「磁盘幂等分支」不会再到本方法，故只需内存去重；
+     * 同一 runId 的 wfFinish / terminateRun 重复调用（含并发）只注入一次。
+     */
+    private readonly reflectionNotified;
     /** dispose 标记：置位后迟到事件缓冲不再重试（插件卸载清理彻底）。 */
     protected disposed: boolean;
     constructor(deps: OrchestratorDeps);
@@ -211,6 +217,18 @@ export declare abstract class RuntimeBase {
      * （父代理空闲时也能收到）。注入失败仅告警，绝不阻断画布保存主流程。
      */
     protected notifyOrchestrationChange(entry: RunEntry, flow: WorkflowDocument): void;
+    /**
+     * 向父代理注入运行终态「复盘指令」（run 进入 completed/failed/stopped 时由两个结束点
+     * 调用：runtime-execute 的 wfFinish、runtime-lifecycle 的 terminateRun）。
+     *
+     * 事实来源：entry.snapshot（status / startedAt / endedAt / nodes / flowName / id）。
+     * paused 与 interrupted 不注入（可续跑，复盘由续跑后的终态触发）；磁盘幂等分支
+     * （内存条目已释放）不会走到这里。
+     *
+     * 幂等：同一 runId 只注入一次（去重表在注入**之前**登记，防止 steer/followup 抛错后重试重复注入）。
+     * 失败语义：注入失败只告警，绝不抛出、不阻断收尾与资源释放（best-effort 辅助路径）。
+     */
+    protected notifyRunReflection(entry: RunEntry, warnPrefix: string): void;
     /**
      * 清理运行时资源（插件卸载/Service dispose，幂等）：
      * 中止全部运行（阻塞等待随之 reject）并清空内存表。

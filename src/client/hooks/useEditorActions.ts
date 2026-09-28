@@ -2,12 +2,20 @@
 //
 // 编辑器/选择操作面：左侧库卡片选中、编辑器字段 patch、保存编辑器对象，
 // 以及删除编辑器对象（草稿直删 / 已入库走确认框 + 后端删除 / 节点连线级联）。
+//
+// 资产态（模版晋升形态）的编排也在本面：
+//   - 入库：先保存模版（工作流模版走画布保存、角色模版走模板库保存），保存未落库即中止；
+//   - 保存：登记资产新版本（永不改写历史版本）；
+//   - 回滚：只改 Active 指针（版本列表由上拉列表组件消费）；
+//   - 删除：二次确认后退役（共享角色资产额外告知级联影响）。
 
-import { useCallback, useRef } from 'react'
+import { useCallback, useMemo, useRef } from 'react'
 import type { Dispatch } from 'react'
+import type { AssetKind, RoleAssetDetail, RoleAssetSummary, WorkflowAssetDetail, WorkflowAssetSummary } from '../../host/shared/asset-types.js'
 import type { LibSelKind, StudioAction, StudioState } from '../studio/studio-state.js'
 import { currentFlowOf, currentServiceOf } from '../studio/studio-state.js'
 import type { WorkflowsFace } from './useWorkflows.js'
+import { serializeWorkflow } from './useWorkflows.js'
 import type { FlowTemplatesFace } from './useFlowTemplates.js'
 import type { TemplatesFace } from './useTemplates.js'
 import type { SelectionFace } from './useSelection.js'
@@ -15,6 +23,7 @@ import type { RemoteFace } from './useRemote.js'
 import type { ToastFace } from './useToast.js'
 import type { DocumentActionsFace } from './useDocumentActions.js'
 import type { CanvasActionsFace } from './useCanvasActions.js'
+import type { AssetsFace } from './useAssets.js'
 import type { RunLockSet } from '../lib/run-locks.js'
 import type { Dict } from '../i18n.js'
 import { EP } from '../lib/remote.js'
@@ -22,14 +31,121 @@ import { EP } from '../lib/remote.js'
 export interface EditorActionsFace {
   selectLibraryCard(kind: LibSelKind, id: string): void
   patchEditor(patch: Record<string, unknown>): void
-  saveEditor(): Promise<void>
+  /**
+   * 保存当前编辑对象（实例/模版/资产）：返回非 null/undefined = 本次已真实落库。
+   * 未保存守卫「保存并继续」据此接续原操作（需要二次确认的路径本次返回 null，
+   * 由 onSaved 在真实落库后转达）。
+   */
+  saveEditor(options?: { onSaved?: () => void }): Promise<unknown>
   deleteEditor(): Promise<void>
+  /** 模版 → 资产入库（先保存模版；保存未落库即中止）。 */
+  promoteEditor(): Promise<void>
+  /** 模版态「入库」是否锁定（已入库且模版内容未再修改）。 */
+  promoteLocked: boolean
+  /** 打开资产版本上拉列表（回滚选择）。 */
+  openAssetVersions(): Promise<void>
+  /** 回滚到历史版本（只改 Active 指针）；无论成败都收起列表。 */
+  rollbackAssetVersion(versionId: number): Promise<void>
 }
 
 /** 编辑器面外部依赖（运行中画布锁定判定）。 */
 export interface EditorActionsOptions {
   /** 运行中锁定集：被锁连线的字段编辑直接忽略（防「运行前已选中」的旁路改写）。 */
   locks: RunLockSet
+}
+
+/**
+ * 模版态「入库」目标（纯函数）：工作流模版 → workflow、角色模版 → role；
+ * 其余模版（文件/数据库/协作组）与实例态/资产态均无入库目标（返回 null）。
+ */
+export function promoteTargetOf(state: StudioState): { kind: AssetKind; templateId: string } | null {
+  const editor = state.editor
+  if (!editor) return null
+  if (editor.source === 'flowTemplate') return { kind: 'workflow', templateId: editor.id }
+  if (editor.source === 'template' && editor.kind === 'role') return { kind: 'role', templateId: editor.id }
+  return null
+}
+
+/**
+ * 入库按钮锁定判据（纯函数）：该模版已入库，且模版内容自入库起未再修改。
+ * 判据 = 资产条目 sourceTemplateId 命中当前模版，且入库时指纹（sourceFingerprint）
+ * 与模版当前指纹（currentTemplateFingerprint）相等；模版已删除（指纹缺失）视为未锁定
+ * ——此时按「可入库」放行，由后端按模版不存在报错。
+ */
+export function isPromoteLocked(
+  summaries: ReadonlyArray<Pick<WorkflowAssetSummary | RoleAssetSummary, 'sourceTemplateId' | 'sourceFingerprint' | 'currentTemplateFingerprint'>>,
+  templateId: string,
+): boolean {
+  return summaries.some((item) => item.sourceTemplateId === templateId
+    && typeof item.sourceFingerprint === 'string'
+    && item.sourceFingerprint !== ''
+    && item.sourceFingerprint === item.currentTemplateFingerprint)
+}
+
+/** 当前模版态的入库锁定（无入库目标 → 未锁定）。 */
+export function promoteLockedOf(state: StudioState): boolean {
+  const target = promoteTargetOf(state)
+  if (!target) return false
+  return isPromoteLocked(target.kind === 'workflow' ? state.assets.workflows : state.assets.roles, target.templateId)
+}
+
+/** 当前编辑器指向的资产（资产态保存 / 回滚 / 退役的定位依据）。 */
+function assetTargetOf(state: StudioState): { kind: AssetKind; assetId: string } | null {
+  const editor = state.editor
+  if (!editor) return null
+  if (editor.source === 'flowAsset') return { kind: 'workflow', assetId: editor.id }
+  if (editor.source === 'roleAsset') return { kind: 'role', assetId: editor.id }
+  return null
+}
+
+/**
+ * 工作流资产保存内容：元信息（mode/名称/描述/meta）取已装载详情（名称/描述经 DOC_PATCH
+ * 写回 assetDoc），图内容取当前画布——资产态画布即编辑中的草稿，与实例态保存同口径；
+ * 节点/连线经统一序列化剔除画布视图字段。
+ */
+function workflowAssetPayload(state: StudioState, detail: WorkflowAssetDetail): Record<string, unknown> {
+  const serialized = serializeWorkflow(
+    {
+      id: detail.assetId,
+      sessionId: state.sessionId,
+      mode: detail.mode,
+      name: detail.name,
+      description: detail.description,
+      nodes: detail.nodes,
+      lines: detail.lines,
+    },
+    state.canvas.nodes,
+    state.canvas.edges,
+  )
+  return {
+    mode: detail.mode,
+    name: detail.name,
+    description: detail.description,
+    nodes: serialized.nodes,
+    lines: serialized.lines,
+    ...(detail.meta ? { meta: detail.meta } : {}),
+  }
+}
+
+/** 角色资产保存内容（字段域与 RoleAssetDetail 一致；assetId 由端点参数定位，不进内容）。 */
+function roleAssetPayload(detail: RoleAssetDetail): Record<string, unknown> {
+  return {
+    kind: detail.kind,
+    name: detail.name,
+    systemPrompt: detail.systemPrompt,
+    provider: detail.provider,
+    model: detail.model,
+    reasoning: detail.reasoning,
+    presetId: detail.presetId,
+    retryLimit: detail.retryLimit,
+    reactLimit: detail.reactLimit,
+    inputSchema: detail.inputSchema,
+    outputSchema: detail.outputSchema,
+    systemPromptSource: detail.systemPromptSource,
+    injectSystemPrompt: detail.injectSystemPrompt,
+    injectToolSections: detail.injectToolSections,
+    promptFilePath: detail.promptFilePath,
+  }
 }
 
 /** 编辑器面（保存/删除失败 toast；节点/连线删除复用画布面）。 */
@@ -42,6 +158,7 @@ export function useEditorActions(
   workflows: WorkflowsFace,
   flowTemplates: FlowTemplatesFace,
   templates: TemplatesFace,
+  assets: AssetsFace,
   selection: SelectionFace,
   remote: RemoteFace,
   saveCanvas: DocumentActionsFace['saveCanvas'],
@@ -109,7 +226,8 @@ export function useEditorActions(
   const patchEditor = useCallback((patch: Record<string, unknown>) => {
     const editor = state.editor
     if (!editor) return
-    if (editor.source === 'workflow' || editor.source === 'service' || editor.source === 'flowTemplate') {
+    if (editor.source === 'workflow' || editor.source === 'service' || editor.source === 'flowTemplate' || editor.source === 'flowAsset') {
+      // 资产态名/描述与实例/模版同路径（DOC_PATCH 按 currentKind 落到对应文档槽）
       dispatch({ type: 'DOC_PATCH', patch: { name: patch.name as string | undefined, description: patch.description as string | undefined } })
       return
     }
@@ -120,6 +238,14 @@ export function useEditorActions(
       const normalized = { ...patch }
       delete normalized.label
       dispatch({ type: 'TEMPLATE_UPDATED', kind: editor.kind, template: { ...template, ...normalized } })
+      return
+    }
+    if (editor.source === 'roleAsset') {
+      // 角色资产字段域只有 name（属性栏 NameField 同时下发 label/name）：此处消毒 label
+      const normalized = { ...patch }
+      if (normalized.name === undefined && normalized.label !== undefined) normalized.name = normalized.label
+      delete normalized.label
+      dispatch({ type: 'ROLE_ASSET_PATCH', patch: normalized })
       return
     }
     if (editor.source === 'node') {
@@ -140,35 +266,96 @@ export function useEditorActions(
     }
   }, [dispatch, locks, state.canvas.nodes, state.editor, state.templates])
 
-  // ---------- 保存 / 删除编辑器对象 ----------
-  const saveEditor = useCallback(async () => {
+  // ---------- 保存 / 入库 / 回滚编辑器对象 ----------
+  const saveEditor = useCallback(async (options?: { onSaved?: () => void }): Promise<unknown> => {
     const editor = state.editor
-    if (!editor) return
-    if (editor.source === 'workflow' || editor.source === 'service') {
-      await saveCanvas()
-      return
-    }
-    if (editor.source === 'flowTemplate') {
-      // 模板态：属性栏「保存」= 保存模板全部内容（与画布上方「创建实例」职责二分）
-      await saveCanvas()
-      return
+    if (!editor) return null
+    const onSaved = options?.onSaved
+    if (
+      editor.source === 'workflow' || editor.source === 'service' || editor.source === 'flowTemplate'
+      || editor.source === 'node' || editor.source === 'edge'
+    ) {
+      return await saveCanvas({ onSaved })
     }
     if (editor.source === 'template') {
       const template = state.templates[editor.kind].find((item) => item.id === editor.id)
-      if (!template) return
+      if (!template) return null
       try {
         await templates.saveTemplate(editor.kind, template)
         notify('success', t.toastSaved)
+        onSaved?.()
+        return template
       } catch (error) {
         toastError(error)
+        return null
       }
-      return
     }
-    if (editor.source === 'node' || editor.source === 'edge') {
-      await saveCanvas()
-      return
+    if (editor.source === 'flowAsset') {
+      // 资产态保存 = 登记该资产的新版本（历史版本内容永不被改写）
+      const detail = state.assetDoc
+      if (!detail || detail.assetId !== editor.id) return null
+      const result = await assets.saveVersion('workflow', detail.assetId, workflowAssetPayload(state, detail))
+      if (!result) return null
+      if (state.currentKind === 'flowAsset' && state.currentId === detail.assetId) {
+        // 画布正打开该资产：重装载详情并重投影画布（清除 dirty + 更新已保存快照，
+        // 对齐实例态保存语义）。装载失败则保留画布现状（未落库的编辑不丢）。
+        const reloaded = await assets.loadAsset('workflow', detail.assetId)
+        if (reloaded) dispatch({ type: 'OPEN_FLOW_ASSET', assetId: detail.assetId })
+      }
+      onSaved?.()
+      return result
     }
-  }, [notify, saveCanvas, state.canvas.nodes, state.editor, state.templates, t.toastSaved, templates, toastError])
+    if (editor.source === 'roleAsset') {
+      const detail = state.assetRoleDoc
+      if (!detail || detail.assetId !== editor.id) return null
+      const result = await assets.saveVersion('role', detail.assetId, roleAssetPayload(detail))
+      if (!result) return null
+      // 重装载 Active 详情：属性栏数据源与新版本号/行 id 保持同源
+      await assets.loadAsset('role', detail.assetId)
+      onSaved?.()
+      return result
+    }
+    return null
+  }, [assets, dispatch, notify, saveCanvas, state, t.toastSaved, templates, toastError])
+
+  const promoteEditor = useCallback(async () => {
+    const target = promoteTargetOf(state)
+    if (!target) return
+    // 已入库且模版未再修改：按钮已禁用，这里再兜一层（防快捷键/回调旁路重复入库）
+    if (promoteLockedOf(state)) return
+    // 入库包含保存：先落模版，未落库（保存失败/待确认）即中止，不入库
+    if (target.kind === 'workflow') {
+      const saved = await saveCanvas()
+      if (!saved) return
+    } else {
+      const template = state.templates.role.find((item) => item.id === target.templateId)
+      if (!template) return
+      try {
+        await templates.saveTemplate('role', template)
+        notify('success', t.toastSaved)
+      } catch (error) {
+        toastError(error)
+        return
+      }
+    }
+    await assets.promote(target.kind, target.templateId)
+  }, [assets, notify, saveCanvas, state, t.toastSaved, templates, toastError])
+
+  const openAssetVersions = useCallback(async () => {
+    const target = assetTargetOf(state)
+    if (!target) return
+    await assets.openVersions(target.kind, target.assetId)
+  }, [assets, state])
+
+  const rollbackAssetVersion = useCallback(async (versionId: number) => {
+    const target = assetTargetOf(state)
+    if (!target) return
+    const rolledBack = await assets.rollback(target.kind, target.assetId, versionId)
+    // 只有回滚真正生效才收起列表：失败时保留列表，用户可直接改选另一个版本重试
+    if (rolledBack) assets.closeVersions()
+  }, [assets, state])
+
+  const promoteLocked = useMemo(() => promoteLockedOf(state), [state])
 
   const deleteEditor = useCallback(async () => {
     const editor = state.editor
@@ -276,6 +463,37 @@ export function useEditorActions(
       })
       return
     }
+    if (editor.source === 'flowAsset' || editor.source === 'roleAsset') {
+      // 资产态删除 = 退役（Active 移除、历史版本保留）：必须二次确认。
+      // 共享角色资产被多个工作流资产版本引用，退役会改变父代理的召回面，故须显式告知级联影响。
+      const kind: AssetKind = editor.source === 'flowAsset' ? 'workflow' : 'role'
+      const assetId = editor.id
+      const roleDetail = kind === 'role' ? state.assetRoleDoc : null
+      const message = roleDetail?.roleAssetType === 'shared'
+        ? t.assetRetireSharedMessage.replace('{count}', String(roleDetail.referenceWorkflowIds.length))
+        : t.assetRetireMessage
+      dispatch({
+        type: 'CONFIRM_SET',
+        confirm: {
+          kind: 'confirmText',
+          title: t.assetRetireTitle,
+          message,
+          confirmLabel: t.assetRetireConfirm,
+          onConfirm: () => {
+            // retire 面自身按稳定错误码提示（失败已 toast）；本面只在**退役成功**时收起
+            // 已退役资产的界面残留——失败时保持现场（确认框收起、资产卡仍在列表里可重试）
+            void assets.retire(kind, assetId).then((retired) => {
+              if (retired) dispatch({ type: 'ASSET_CLOSED', assetId })
+              else dispatch({ type: 'CONFIRM_SET', confirm: null })
+            }).catch((error) => {
+              toastError(error)
+              dispatch({ type: 'CONFIRM_SET', confirm: null })
+            })
+          },
+        },
+      })
+      return
+    }
     if (editor.source === 'node') {
       removeSelected()
       return
@@ -283,7 +501,10 @@ export function useEditorActions(
     if (editor.source === 'edge') {
       removeLine(editor.id)
     }
-  }, [clearCanvasIfOwned, dispatch, notify, removeLine, removeSelected, state.editor, state.sessionId, state.templates, state.flowTemplates, t.confirmDelete, t.deleteFlow, t.toastDeleted, templates, flowTemplates, toastError, workflows])
+  }, [assets, clearCanvasIfOwned, dispatch, notify, removeLine, removeSelected, state, t.assetRetireConfirm, t.assetRetireMessage, t.assetRetireSharedMessage, t.assetRetireTitle, t.confirmDelete, t.deleteFlow, t.toastDeleted, templates, flowTemplates, toastError, workflows])
 
-  return { selectLibraryCard, patchEditor, saveEditor, deleteEditor }
+  return {
+    selectLibraryCard, patchEditor, saveEditor, deleteEditor,
+    promoteEditor, promoteLocked, openAssetVersions, rollbackAssetVersion,
+  }
 }

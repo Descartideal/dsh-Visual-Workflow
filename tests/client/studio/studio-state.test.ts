@@ -15,9 +15,13 @@ import {
   editorDataOf,
   flowToCanvas,
   graphSnapshotOf,
+  currentFlowAssetOf,
+  inspectorOpenOf,
+  isInstanceSourceKind,
   type StudioState,
   type CanvasNode,
 } from '../../../src/client/studio/studio-state.js'
+import type { RoleAssetDetail, WorkflowAssetDetail } from '../../../src/host/shared/asset-types.js'
 
 function baseState(): StudioState {
   return createInitialState('s-1')
@@ -324,5 +328,200 @@ describe('editorDataOf', () => {
     expect(opened.comboOpen).toBe(false) // 与组合管理开关独立
     const closed = studioReducer(opened, { type: 'SCHEDULER_OPEN', open: false })
     expect(closed.schedulerOpen).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 资产态（模版 / 资产来源）：库来源、搜索、资产列表/详情/版本与画布投影
+// ---------------------------------------------------------------------------
+
+const assetDetail: WorkflowAssetDetail = {
+  assetId: 'a-1',
+  versionId: 2,
+  rowId: 'row-2',
+  mode: 'mode1',
+  name: '资产一',
+  description: '描述一',
+  nodes: [{ id: 's1', kind: 'start', position: { x: 0, y: 0 }, data: { label: '启动' } }] as WorkflowAssetDetail['nodes'],
+  lines: [],
+  roleVersionIds: [],
+  createdAt: 1,
+}
+
+const roleAssetDetail: RoleAssetDetail = {
+  assetId: 'a-r1',
+  versionId: 1,
+  rowId: 'row-1',
+  kind: 'agent',
+  roleAssetType: 'standalone',
+  name: '资产角色',
+  systemPrompt: '你是资产角色',
+  provider: 'deepseek',
+  model: 'deepseek-chat',
+  retryLimit: 3,
+  referenceWorkflowIds: [],
+  createdAt: 1,
+}
+
+describe('资产态状态机', () => {
+  it('初始状态：库来源默认模版、搜索为空、资产列表/详情/版本为空', () => {
+    const state = baseState()
+    expect(state.librarySource).toBe('template')
+    expect(state.libSearch).toBe('')
+    expect(state.assets).toEqual({ workflows: [], roles: [] })
+    expect(state.assetDoc).toBeNull()
+    expect(state.assetRoleDoc).toBeNull()
+    expect(state.assetVersions).toBeNull()
+  })
+
+  it('SET_LIBRARY_SOURCE / SET_LIB_SEARCH：单字段赋值', () => {
+    let state = baseState()
+    state = studioReducer(state, { type: 'SET_LIBRARY_SOURCE', source: 'asset' })
+    state = studioReducer(state, { type: 'SET_LIB_SEARCH', query: '研究' })
+    expect(state.librarySource).toBe('asset')
+    expect(state.libSearch).toBe('研究')
+  })
+
+  it('ASSETS_LOADED：写入两类资产列表', () => {
+    const state = studioReducer(baseState(), {
+      type: 'ASSETS_LOADED',
+      workflows: [{ assetId: 'a-1', versionId: 1, name: '资产一', description: '', updatedAt: 1 }],
+      roles: [{ assetId: 'a-r1', versionId: 1, name: '角色资产', kind: 'agent', roleAssetType: 'standalone', updatedAt: 1 }],
+    })
+    expect(state.assets.workflows.map((item) => item.assetId)).toEqual(['a-1'])
+    expect(state.assets.roles.map((item) => item.assetId)).toEqual(['a-r1'])
+  })
+
+  it('OPEN_FLOW_ASSET：画布 = 资产详情投影，切到资产态并重置选中/编辑器/未保存标记', () => {
+    let state = baseState()
+    state = studioReducer(state, { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    state = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+    expect(state.currentKind).toBe('flowAsset')
+    expect(state.currentId).toBe('a-1')
+    expect(state.canvas.nodes.map((node) => node.id)).toEqual(['s1'])
+    expect(state.editor).toEqual({ source: 'flowAsset', id: 'a-1' })
+    expect(state.selection.lib).toEqual({ kind: 'flowAsset', id: 'a-1' })
+    expect(state.dirty).toBe(false)
+    expect(state.savedGraph).not.toBeNull()
+  })
+
+  it('OPEN_FLOW_ASSET：assetId 与已装载详情不一致 → 保持原状态（丢弃陈旧装载）', () => {
+    let state = baseState()
+    state = studioReducer(state, { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    const next = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-2' })
+    expect(next.currentKind).toBeNull()
+    expect(next.currentId).toBeNull()
+  })
+
+  it('DOC_PATCH：资产态名称/描述落在 assetDoc 上并标记未保存', () => {
+    let state = baseState()
+    state = studioReducer(state, { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    state = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+    state = studioReducer(state, { type: 'DOC_PATCH', patch: { name: '改名后' } })
+    expect(state.assetDoc?.name).toBe('改名后')
+    expect(state.assetDoc?.description).toBe('描述一')
+    expect(state.dirty).toBe(true)
+  })
+
+  it('OPEN_ROLE_ASSET：属性栏编辑角色资产（选中 + 编辑器引用）', () => {
+    let state = studioReducer(baseState(), { type: 'ROLE_ASSET_LOADED', detail: roleAssetDetail })
+    state = studioReducer(state, { type: 'OPEN_ROLE_ASSET', assetId: 'a-r1' })
+    expect(state.assetRoleDoc?.assetId).toBe('a-r1')
+    expect(state.editor).toEqual({ source: 'roleAsset', id: 'a-r1' })
+    expect(state.selection.lib).toEqual({ kind: 'roleAsset', id: 'a-r1' })
+  })
+
+  it('ASSET_VERSIONS_LOADED / ASSET_VERSIONS_CLOSED：回滚上拉列表数据面', () => {
+    const items = [{ versionId: 2, rowId: 'row-2', name: 'v2', createdAt: 2, source: 'human' as const, active: true }]
+    let state = studioReducer(baseState(), { type: 'ASSET_VERSIONS_LOADED', kind: 'workflow', assetId: 'a-1', items })
+    expect(state.assetVersions).toEqual({ kind: 'workflow', assetId: 'a-1', items })
+    state = studioReducer(state, { type: 'ASSET_VERSIONS_CLOSED' })
+    expect(state.assetVersions).toBeNull()
+  })
+
+  it('ROLE_ASSET_PATCH：属性栏字段写回 assetRoleDoc；未装载详情时不改状态', () => {
+    let state = studioReducer(baseState(), { type: 'ROLE_ASSET_LOADED', detail: roleAssetDetail })
+    state = studioReducer(state, { type: 'ROLE_ASSET_PATCH', patch: { name: '改名后', systemPrompt: '新提示词' } })
+    expect(state.assetRoleDoc?.name).toBe('改名后')
+    expect(state.assetRoleDoc?.systemPrompt).toBe('新提示词')
+    expect(state.assetRoleDoc?.provider).toBe('deepseek')
+
+    const untouched = studioReducer(baseState(), { type: 'ROLE_ASSET_PATCH', patch: { name: '改名后' } })
+    expect(untouched.assetRoleDoc).toBeNull()
+  })
+
+  it('ASSET_CLOSED：清空该资产详情槽；正打开在画布时一并清空画布与编辑器', () => {
+    let state = studioReducer(baseState(), { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    state = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+    state = studioReducer(state, { type: 'ROLE_ASSET_LOADED', detail: roleAssetDetail })
+    state = studioReducer(state, { type: 'ASSET_VERSIONS_LOADED', kind: 'workflow', assetId: 'a-1', items: [] })
+    state = studioReducer(state, { type: 'ASSET_CLOSED', assetId: 'a-1' })
+
+    expect(state.assetDoc).toBeNull()
+    expect(state.assetVersions).toBeNull()
+    expect(state.currentId).toBeNull()
+    expect(state.currentKind).toBeNull()
+    expect(state.canvas.nodes).toEqual([])
+    expect(state.dirty).toBe(false)
+    expect(state.editor).toBeNull()
+    // 其他资产的已装载详情不受影响（退役只影响目标资产）
+    expect(state.assetRoleDoc?.assetId).toBe('a-r1')
+  })
+
+  it('ASSET_CLOSED：角色资产在属性栏编辑时清空编辑器与选中，画布文档保持不动', () => {
+    let state = studioReducer(baseState(), { type: 'ROLE_ASSET_LOADED', detail: roleAssetDetail })
+    state = studioReducer(state, { type: 'OPEN_ROLE_ASSET', assetId: 'a-r1' })
+    state = studioReducer(state, { type: 'ASSET_CLOSED', assetId: 'a-r1' })
+
+    expect(state.assetRoleDoc).toBeNull()
+    expect(state.editor).toBeNull()
+    expect(state.selection).toEqual({ nodeId: null, edgeId: null, lib: null })
+    expect(state.currentKind).toBeNull()
+  })
+})
+
+describe('资产态选择器（editorDataOf / currentFlowAssetOf / isInstanceSourceKind）', () => {
+  it('editorDataOf：flowAsset → workflow 表单数据 + 资产标记', () => {
+    let state = studioReducer(baseState(), { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    state = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+    const data = editorDataOf(state)
+    expect(data?.kind).toBe('workflow')
+    expect(data?.name).toBe('资产一')
+    expect(data?.data).toEqual({ name: '资产一', description: '描述一' })
+    expect(data?.asset).toBe(true)
+    expect(data?.assetId).toBe('a-1')
+  })
+
+  it('editorDataOf：roleAsset → role 表单数据（详情投影）+ 资产标记', () => {
+    let state = studioReducer(baseState(), { type: 'ROLE_ASSET_LOADED', detail: roleAssetDetail })
+    state = studioReducer(state, { type: 'OPEN_ROLE_ASSET', assetId: 'a-r1' })
+    const data = editorDataOf(state)
+    expect(data?.kind).toBe('role')
+    expect(data?.name).toBe('资产角色')
+    expect((data?.data as { systemPrompt?: string }).systemPrompt).toBe('你是资产角色')
+    expect(data?.roleAsset).toBe(true)
+    expect(data?.assetId).toBe('a-r1')
+    expect(inspectorOpenOf(state)).toBe(true)
+  })
+
+  it('editorDataOf：详情未装载 / 引用不匹配 → null（不渲染空表单）', () => {
+    const state = studioReducer(baseState(), { type: 'OPEN_ROLE_ASSET', assetId: 'a-r1' })
+    expect(editorDataOf(state)).toBeNull()
+    expect(inspectorOpenOf(state)).toBe(false)
+  })
+
+  it('currentFlowAssetOf：仅在资产态且详情同源时返回文档', () => {
+    let state = studioReducer(baseState(), { type: 'ASSET_DOC_LOADED', detail: assetDetail })
+    expect(currentFlowAssetOf(state)).toBeNull()
+    state = studioReducer(state, { type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+    expect(currentFlowAssetOf(state)?.assetId).toBe('a-1')
+  })
+
+  it('isInstanceSourceKind：模版态与资产态都是「实例来源」，其余不是', () => {
+    expect(isInstanceSourceKind('flowTemplate')).toBe(true)
+    expect(isInstanceSourceKind('flowAsset')).toBe(true)
+    expect(isInstanceSourceKind('workflow')).toBe(false)
+    expect(isInstanceSourceKind('service')).toBe(false)
+    expect(isInstanceSourceKind(null)).toBe(false)
   })
 })

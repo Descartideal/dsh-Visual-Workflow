@@ -29,7 +29,8 @@ export function callerOf(exec: ToolExecLike): CallerInfo {
 
 /**
  * 工具层所需宿主能力（宿主 service 的最小结构适配；index.ts 装配，单测 fake）。
- * 各工具按需使用其中的子集：编排四工具只读 orchestrator；wf_ask 另需 getRootAgent。
+ * 各工具按需使用其中的子集：编排四工具只读 orchestrator；wf_ask 另需 getRootAgent；
+ * wf_experience 的宿主缝在编排器与根 Agent 之外还需 assets（见其 WfExperienceHost）。
  */
 export interface WfToolsHost {
   /** 编排运行时（wf_run_node/wf_finish/wf_ask 校验与执行）。 */

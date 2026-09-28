@@ -1,4 +1,4 @@
-/** 解析结果：可召回资产引用，或形状非法（附可行动原因）。 */
+/** 解析结果：可召回引用，或形状非法（附可行动原因）。 */
 export type AssetRef = {
     ok: true;
     kind: 'workflow';
@@ -6,6 +6,10 @@ export type AssetRef = {
 } | {
     ok: true;
     kind: 'role';
+    id: string;
+} | {
+    ok: true;
+    kind: 'experience';
     id: string;
 } | {
     ok: true;
@@ -20,8 +24,8 @@ export type AssetRef = {
 /** 支持的 id 形状说明（错误提示复用，避免措辞漂移）。 */
 export declare function idShapesHint(): string;
 /**
- * 解析单个资产 id（纯函数）。
- * 内联角色只从**工作流模板**召回：复合键左侧必须是 `tpl-*`——运行期实例的骨架与
+ * 解析单个 id（纯函数）。
+ * 内联角色只从**工作流资产**召回：复合键左侧必须是 `flow-*`——运行期实例的骨架与
  * 内联角色不由本工具暴露（父代理只允许改当前正在运行的实例，其编排事实由运行期
  * 编排指令提供）。
  */

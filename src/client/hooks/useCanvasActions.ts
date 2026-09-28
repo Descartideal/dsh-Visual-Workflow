@@ -14,6 +14,7 @@ import { useCallback, useEffect, useRef } from 'react'
 import type { Dispatch } from 'react'
 import type { StudioAction, StudioState, CanvasNode, CanvasEdge } from '../studio/studio-state.js'
 import { currentFlowOf, currentFlowTemplateOf, currentServiceOf } from '../studio/studio-state.js'
+import type { RoleAssetDetail } from '../../host/shared/asset-types.js'
 import type { GraphHistoryFace } from './useGraphHistory.js'
 import type { ToastFace } from './useToast.js'
 import type { SaveCanvasOptions } from './useDocumentActions.js'
@@ -24,6 +25,7 @@ import { consolidateGroups, dropNodeFlowLines, joinNodeToGroup } from '../lib/gr
 import { layoutNodes } from '../lib/layout-fit.js'
 import { stageTemplateKinds } from '../lib/graph-handles.js'
 import { templateToNodeData } from '../lib/template-to-node.js'
+import { roleAssetNodeKind, roleAssetToNodeData } from '../lib/asset-to-node.js'
 
 /** 几何拖动（节点拖动 / 组卡片缩放）自动保存的防抖窗口（毫秒）。 */
 export const GEOMETRY_AUTOSAVE_DEBOUNCE_MS = 400
@@ -48,6 +50,8 @@ export interface CanvasActionsFace {
   removeNodeNow(id: string): void
   removeLine(id: string): void
   placeTemplateNode(kind: 'role' | 'file' | 'database', templateId: string, position: { x: number; y: number }): void
+  /** 角色资产拖入画布：生成内联角色节点并写入来源资产 id（sourceAssetId）。 */
+  placeRoleAssetNode(detail: RoleAssetDetail, position: { x: number; y: number }): void
   placeParentNode(templateId: string, position: { x: number; y: number }): void
   placeStageNode(kind: string, position: { x: number; y: number }): void
   placeGroupNode(position: { x: number; y: number }): void
@@ -78,6 +82,9 @@ export function useCanvasActions(
   /** 当前画布对象是否可自动保存（无对象/本地草稿态跳过——草稿须手动保存/创建实例）。 */
   const canAutoSave = useCallback((): boolean => {
     if (!state.currentId) return false
+    // 资产态：内容变更必须显式「登记新版本」（版本是显式动作，T6 接线的保存入口负责），
+    // 不做几何防抖自动保存——否则拖动即静默产生版本。
+    if (state.currentKind === 'flowAsset') return false
     const doc = state.currentKind === 'flowTemplate'
       ? currentFlowTemplateOf(state)
       : state.currentKind === 'workflow'
@@ -232,6 +239,30 @@ export function useCanvasActions(
     dispatch({ type: 'SELECT_NODE', id: node.id })
     notify('success', t.toastNodeAdded)
   }, [dispatch, history, notify, state.currentId, state.templates, t.toastNodeAdded])
+
+  /**
+   * 角色资产拖入画布（资产态）：生成**内联**角色节点（深拷贝解耦），
+   * data.sourceAssetId 登记来源资产 id——仍是内联节点，不建立运行时引用。
+   * 父代理资产沿用「每画布最多一个父代理」约束（与父子代理模板同口径）。
+   */
+  const placeRoleAssetNode = useCallback((detail: RoleAssetDetail, position: { x: number; y: number }) => {
+    if (!state.currentId) return
+    const nodeKind = roleAssetNodeKind(detail)
+    if (nodeKind === 'parent' && state.canvas.nodes.some((item) => item.kind === 'parent')) {
+      notify('error', t.parentDuplicatedHint)
+      return
+    }
+    const node: CanvasNode = {
+      id: `${nodeKind}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      kind: nodeKind,
+      position,
+      data: roleAssetToNodeData(detail),
+    }
+    history.remember()
+    dispatch({ type: 'NODE_ADDED', node })
+    dispatch({ type: 'SELECT_NODE', id: node.id })
+    notify('success', t.toastNodeAdded)
+  }, [dispatch, history, notify, state.canvas.nodes, state.currentId, t.parentDuplicatedHint, t.toastNodeAdded])
 
   /** 放置父代理节点（每画布最多一个，§4.2.3.1 规则 5）。 */
   const placeParentNode = useCallback((templateId: string, position: { x: number; y: number }) => {
@@ -425,7 +456,7 @@ export function useCanvasActions(
   return {
     rememberGraph, moveNode, onNodeDragStart, onConnect, onConnectionRejected,
     tidyGraph, clearGraph, removeSelected, removeNodeNow, removeLine,
-    placeTemplateNode, placeParentNode, placeStageNode, placeGroupNode, placeGroupFromTemplate, placeTemplateIntoGroup,
+    placeTemplateNode, placeRoleAssetNode, placeParentNode, placeStageNode, placeGroupNode, placeGroupFromTemplate, placeTemplateIntoGroup,
     onGroupResize, addNodeToGroup, copyToProxy, removeGroupMember, swapNodePorts,
   }
 }

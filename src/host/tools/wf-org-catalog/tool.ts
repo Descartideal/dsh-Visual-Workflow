@@ -1,16 +1,17 @@
 // src/host/tools/wf-org-catalog/tool.ts
 //
-// wf_org_catalog 工具注册：父代理的「人才市场 + 现有资产」只读勘察。
+// wf_org_catalog 工具注册：父代理的「组织资产 + 经验」只读勘察。
 //
 // 调用模型（用户裁决）：只区分「传 ids / 不传 ids」——
-//   - 不传（或空数组 / 空串）→ **资产索引**：组合（含工具清单）、官方 preset、模型与
-//     思考强度、编排规则、角色模板索引、工作流模板索引，以及 ID 约定与召回指引；
-//   - 传 ids → **批量详情**：`tpl-*` 工作流骨架 / `role-*` 角色完整 systemPrompt /
-//     `<tpl-id>#<node-id>` 模板内联角色完整 systemPrompt；坏 id 只单条报错，不阻塞其余。
+//   - 不传（或空数组 / 空串）→ **资产与经验索引**：组合（含工具清单）、官方 preset、模型与
+//     思考强度、编排规则、工作流资产与角色资产索引、经验索引，以及 ID 约定与召回指引；
+//   - 传 ids → **批量详情**：`flow-*` 工作流骨架 / `role-*` 角色完整 systemPrompt /
+//     `<flow-id>#<node-id>` 工作流资产内联角色完整 systemPrompt / `ex-*` 经验全文；
+//     坏 id 只单条报错，不阻塞其余。
 //
 // 职责边界：本文件只做「注册 + 取数编排 + 错误归一」；返回体装配在 build.ts（纯函数），
 // id 判定在 ids.ts（纯函数）。零写操作、幂等；不读运行实例（实例编排事实由运行期编排
-// 指令提供，本工具只暴露工作流模板资产）。
+// 指令提供，本工具只暴露资产与经验）。
 //
 // 提示词规范：description 官方标准英文（何时调用/前置条件/失败语义/副作用）。
 
@@ -19,26 +20,60 @@ import { defineTool, type ToolDefinitionLike, type ToolExecLike } from '../infra
 import { textRender } from '../infrastructure/text-render.js'
 import { callerOf } from '../infrastructure/caller.js'
 import { WfError } from '../../orchestrator/index.js'
-import { buildIndex, buildInlineRoleDetail, buildRoleDetail, buildWorkflowDetail } from './build.js'
+import {
+  buildExperienceDetail,
+  buildIndex,
+  buildInlineRoleDetail,
+  buildRoleDetail,
+  buildWorkflowDetail,
+  type ResolvedRoleRef,
+} from './build.js'
 import { detailIdsLimitProblem, normalizeAssetIds, parseAssetId } from './ids.js'
-import type { CatalogDetails, CatalogIndex, CatalogModelSource, CatalogPresetSource } from './types.js'
-import type { RoleNode, WorkflowTemplate } from '../../shared/graph-model.js'
+import { CATALOG_LIMITS } from './types.js'
+import type {
+  CatalogAssetDetail,
+  CatalogDetails,
+  CatalogDetailError,
+  CatalogIndex,
+  CatalogModelSource,
+  CatalogPresetSource,
+} from './types.js'
+import type {
+  ExperienceEntry,
+  ExperienceIndexEntry,
+  RoleAssetDetail,
+  RoleAssetSummary,
+  WorkflowAssetDetail,
+  WorkflowAssetSummary,
+} from '../../shared/asset-types.js'
+import type { RoleNode } from '../../shared/graph-model.js'
 
 /**
  * 工具层所需宿主能力（宿主 service 的最小结构适配；单测 fake）。
  *
+ * 为什么资产经独立缝而不是直接给 store：资产库是「Active 索引 + 版本行」两层事实的唯一
+ * 所有者，工具只需这两层查询；组合清单仍来自宿主数据层（它不是资产事实）。
  * 为什么不含运行态与工具开关：工作流实例与运行事实由运行期编排指令提供——父代理只允许
  * 改当前正在运行的实例，不通过本工具枚举实例；被全局关闭的工具在模型侧表现为
  * UNKNOWN_TOOL，全量关闭清单一来与编排决策无关，二来会吃掉大量上下文预算。
  */
 export interface OrgCatalogHost {
-  /** 数据层：角色模板 / 工具组合 / 工作流模板。 */
-  store: {
-    listTemplates(kind: 'role'): Promise<unknown[]>
-    listToolCombos(): Promise<unknown[]>
-    listFlowTemplates(): Promise<WorkflowTemplate[]>
-    getFlowTemplate(id: string): Promise<WorkflowTemplate | null>
+  /** 资产库（Active 索引 + 详情召回；资产事实唯一来源）。 */
+  assets: {
+    listWorkflowAssets(): Promise<WorkflowAssetSummary[]>
+    listRoleAssets(): Promise<RoleAssetSummary[]>
+    getWorkflowAsset(assetId: string): Promise<WorkflowAssetDetail | null>
+    getRoleAsset(assetId: string): Promise<RoleAssetDetail | null>
+    listExperienceIndex(limit: number): Promise<ExperienceIndexEntry[]>
+    getExperiences(ids: string[]): Promise<ExperienceEntry[]>
+    /**
+     * 可选缝：把工作流资产里钉住的**角色版本行 id** 回溯为角色资产 id。
+     * 没有它时骨架仍给 roleVersionId（钉的是哪一版），只是无法标注角色资产名。
+     */
+    getRoleAssetVersion?: (roleRowId: string) => Promise<RoleAssetDetail | null>
   }
+  /** 组合清单（非资产事实，仍从宿主数据层取）。 */
+  listToolCombos(): Promise<unknown[]>
   /** agent preset 目录（可选缝；缺失按空清单处理）。 */
   listPresets?: () => Promise<CatalogPresetSource[]>
   /** 模型目录（可选缝；缺失按空清单处理）：节点 provider/model/reasoning 的取值来源。 */
@@ -53,7 +88,7 @@ export async function executeOrgCatalog(
   const ids = normalizeAssetIds(args?.ids)
   if (ids === null) {
     throw new WfError(
-      `ids 必须是字符串数组（只看资产索引请省略该参数）——收到 ${JSON.stringify(args?.ids ?? null)}`,
+      `ids 必须是字符串数组（只看资产与经验索引请省略该参数）——收到 ${JSON.stringify(args?.ids ?? null)}`,
       'WF_BAD_ARGS',
     )
   }
@@ -64,96 +99,182 @@ export async function executeOrgCatalog(
 
 /**
  * 索引取数。
- * 核心清单（角色模板 / 组合 / 工作流模板）读取失败**向上抛**——不伪装成「没有资产」，
+ * 核心清单（资产 / 经验索引 / 组合）读取失败**向上抛**——不伪装成「没有资产」，
  * 否则父代理会基于空目录做出错误编排；preset 与模型是可选目录，缺失或失败按空清单处理。
  */
 async function buildIndexFrom(host: OrgCatalogHost): Promise<CatalogIndex> {
-  const [roles, combos, templates] = await Promise.all([
-    host.store.listTemplates('role'),
-    host.store.listToolCombos(),
-    host.store.listFlowTemplates(),
+  const [workflows, roles, experiences, combos] = await Promise.all([
+    host.assets.listWorkflowAssets(),
+    host.assets.listRoleAssets(),
+    host.assets.listExperienceIndex(CATALOG_LIMITS.experiences),
+    host.listToolCombos(),
   ])
   const presets = host.listPresets ? await host.listPresets().catch(() => []) : []
   const models = host.listModels ? await host.listModels().catch(() => []) : []
   return buildIndex({
-    roles: roles as Array<Record<string, unknown>>,
+    workflows: workflows ?? [],
+    roles: roles ?? [],
+    experiences: experiences ?? [],
     combos: combos as Array<Record<string, unknown>>,
     presets,
     models,
-    templates,
   })
 }
 
+/** 单条召回的取数结果：值或该 id 的错误（错误不冒泡为整批失败）。 */
+type Lookup<T> = { ok: true; value: T } | { ok: false; error: CatalogDetailError }
+
+async function lookupOf<T>(id: string, read: () => Promise<T>): Promise<Lookup<T>> {
+  try {
+    return { ok: true, value: await read() }
+  } catch (error) {
+    return { ok: false, error: { id, code: errorCodeOf(error), message: messageOf(error) } }
+  }
+}
+
 /**
- * 批量详情召回：逐条独立处理——形状非法 / 资产不存在 / 单条读失败都只记为该 id 的
- * error，绝不阻塞同批其余 id（用户裁决）。
+ * 批量详情召回：逐条独立处理——形状非法 / 资产不存在 / 单条读失败 / 已退役都只记为该 id
+ * 的 error，绝不阻塞同批其余 id（用户裁决）。
  */
 async function buildDetailsFrom(host: OrgCatalogHost, ids: string[]): Promise<CatalogDetails> {
-  const assets: CatalogDetails['assets'] = []
-  const errors: CatalogDetails['errors'] = []
-  /** 角色模板清单延迟读取：本批没有 `role-*` 时不读盘。 */
-  let roles: Array<Record<string, unknown>> | null = null
-  /** 模板按容器 id 缓存：同一模板的多个内联角色只读一次；已确认不存在也缓存。 */
-  const templateCache = new Map<string, WorkflowTemplate | null>()
+  const refs = ids.map((id) => ({ id, ref: parseAssetId(id) }))
+  const assets: CatalogAssetDetail[] = []
+  const errors: CatalogDetailError[] = []
+  /** 已确认不存在（null）与读出结果的缓存：同批重复引用只查一次。 */
+  const workflowCache = new Map<string, WorkflowAssetDetail | null>()
+  const roleCache = new Map<string, RoleAssetDetail | null>()
+  const roleVersionCache = new Map<string, ResolvedRoleRef | null>()
+  const experienceCache = new Map<string, ExperienceEntry | null>()
 
-  for (const id of ids) {
-    const ref = parseAssetId(id)
+  const loadWorkflow = async (assetId: string): Promise<WorkflowAssetDetail | null> => {
+    if (!workflowCache.has(assetId)) workflowCache.set(assetId, await host.assets.getWorkflowAsset(assetId))
+    return workflowCache.get(assetId) ?? null
+  }
+  const loadRole = async (assetId: string): Promise<RoleAssetDetail | null> => {
+    if (!roleCache.has(assetId)) roleCache.set(assetId, await host.assets.getRoleAsset(assetId))
+    return roleCache.get(assetId) ?? null
+  }
+  /** 角色版本行 id → 资产引用（无回溯缝或行已不存在时返回 null）。 */
+  const loadRoleRef = async (roleRowId: string): Promise<ResolvedRoleRef | null> => {
+    const reader = host.assets.getRoleAssetVersion
+    if (!reader) return null
+    if (!roleVersionCache.has(roleRowId)) {
+      const detail = await reader(roleRowId)
+      roleVersionCache.set(roleRowId, detail ? { assetId: detail.assetId, versionId: detail.versionId } : null)
+    }
+    return roleVersionCache.get(roleRowId) ?? null
+  }
+
+  // 单次预扫分类：形状非法的 id 不进入任何取数，避免为坏 id 触发无谓读盘。
+  // 内联角色的容器也计入工作流资产读盘（同一容器去重后只读一次）。
+  const experienceIds: string[] = []
+  const workflowIds: string[] = []
+  const roleIds: string[] = []
+  for (const { ref } of refs) {
+    if (!ref.ok) continue
+    if (ref.kind === 'experience') experienceIds.push(ref.id)
+    else if (ref.kind === 'workflow') workflowIds.push(ref.id)
+    else if (ref.kind === 'role') roleIds.push(ref.id)
+    else if (!workflowIds.includes(ref.containerId)) workflowIds.push(ref.containerId)
+  }
+
+  // 经验一次批量取（宿主按 ids 批量实现），再按 id 归位以保持逐条独立。
+  // 整批取数失败时把同一个失败按 id 逐条落账：错误属于该批每一次引用，不是某一条的专属失败。
+  let experienceFailure: CatalogDetailError | null = null
+  if (experienceIds.length > 0) {
+    const lookup = await lookupOf(experienceIds[0], () => host.assets.getExperiences(experienceIds))
+    const found = lookup.ok
+      ? new Map((lookup.value ?? []).map((entry) => [String(entry?.id ?? ''), entry]))
+      : new Map<string, ExperienceEntry>()
+    if (!lookup.ok) experienceFailure = lookup.error
+    for (const id of experienceIds) experienceCache.set(id, found.get(id) ?? null)
+  }
+
+  const workflowLookups = await Promise.all(workflowIds.map((id) => lookupOf(id, () => loadWorkflow(id))))
+  const roleLookups = await Promise.all(roleIds.map((id) => lookupOf(id, () => loadRole(id))))
+  const failureOf = new Map<string, CatalogDetailError>()
+  for (const lookup of [...workflowLookups, ...roleLookups]) {
+    if (!lookup.ok) failureOf.set(lookup.error.id, lookup.error)
+  }
+
+  for (const { id, ref } of refs) {
     if (!ref.ok) {
       errors.push({ id, code: 'WF_BAD_ARGS', message: ref.reason })
       continue
     }
-    try {
-      if (ref.kind === 'role') {
-        roles = roles ?? (await host.store.listTemplates('role')) as Array<Record<string, unknown>>
-        const role = roles.find((item) => String(item.id ?? '') === ref.id)
-        if (!role) {
-          errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `角色模板不存在：${ref.id}` })
-          continue
-        }
-        assets.push(buildRoleDetail(role))
-        continue
-      }
-      const containerId = ref.kind === 'workflow' ? ref.id : ref.containerId
-      const template = await loadTemplate(host, containerId, templateCache)
-      if (!template) {
-        errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `工作流模板不存在：${containerId}` })
-        continue
-      }
-      if (ref.kind === 'workflow') {
-        assets.push(buildWorkflowDetail(template))
-        continue
-      }
-      const node = (template.nodes ?? []).find((item) => item.id === ref.nodeId)
-      if (!node) {
-        errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `工作流模板 ${containerId} 中不存在节点：${ref.nodeId}` })
-        continue
-      }
-      if (node.kind !== 'agent' && node.kind !== 'parent') {
-        errors.push({
-          id,
-          code: 'WF_BAD_ARGS',
-          message: `节点 ${ref.nodeId} 是 ${node.kind}，没有 systemPrompt（只有 agent/parent 角色节点可召回）`,
-        })
-        continue
-      }
-      assets.push(buildInlineRoleDetail({ containerId, node: node as RoleNode }))
-    } catch (error) {
-      errors.push({ id, code: errorCodeOf(error), message: messageOf(error) })
+    const failure = failureOf.get(id)
+    if (failure) {
+      errors.push(failure)
+      continue
     }
+    if (ref.kind === 'workflow') {
+      const detail = workflowCache.get(ref.id)
+      if (!detail) {
+        errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `工作流资产不存在或已退役：${ref.id}` })
+        continue
+      }
+      // 角色版本回溯是 best-effort：读失败只丢 roleAssetId，骨架主体照常返回。
+      const resolved = new Map<string, ResolvedRoleRef>()
+      for (const roleRef of detail.roleVersionIds ?? []) {
+        const rowId = String(roleRef?.roleVersionId ?? '').trim()
+        if (!rowId) continue
+        const resolvedRef = await loadRoleRef(rowId).catch(() => null)
+        if (resolvedRef) resolved.set(rowId, resolvedRef)
+      }
+      assets.push(buildWorkflowDetail(detail, (rowId) => resolved.get(rowId) ?? null))
+      continue
+    }
+    if (ref.kind === 'role') {
+      const detail = roleCache.get(ref.id)
+      if (!detail) {
+        errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `角色资产不存在或已退役：${ref.id}` })
+        continue
+      }
+      assets.push(buildRoleDetail(detail))
+      continue
+    }
+    if (ref.kind === 'experience') {
+      if (experienceFailure) {
+        errors.push({ ...experienceFailure, id })
+        continue
+      }
+      const experience = experienceCache.get(ref.id)
+      if (!experience) {
+        errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `经验不存在：${ref.id}` })
+        continue
+      }
+      assets.push(buildExperienceDetail(experience))
+      continue
+    }
+    const container = workflowCache.get(ref.containerId)
+    if (!container) {
+      errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `工作流资产不存在或已退役：${ref.containerId}` })
+      continue
+    }
+    const node = (container.nodes ?? []).find((item) => item.id === ref.nodeId)
+    if (!node) {
+      errors.push({ id, code: 'WF_ORG_NOT_FOUND', message: `工作流资产 ${ref.containerId} 中不存在节点：${ref.nodeId}` })
+      continue
+    }
+    if (node.kind !== 'agent' && node.kind !== 'parent') {
+      errors.push({
+        id,
+        code: 'WF_BAD_ARGS',
+        message: `节点 ${ref.nodeId} 是 ${node.kind}，没有 systemPrompt（只有 agent/parent 角色节点可召回）`,
+      })
+      continue
+    }
+    const rowId = (container.roleVersionIds ?? [])
+      .find((item) => String(item?.nodeId ?? '') === ref.nodeId)?.roleVersionId
+    const roleRef = rowId ? await loadRoleRef(String(rowId)).catch(() => null) : null
+    assets.push(buildInlineRoleDetail({
+      containerId: ref.containerId,
+      node: node as RoleNode,
+      ...(roleRef?.assetId ? { roleAssetId: roleRef.assetId } : {}),
+      ...(roleRef ? { roleVersionId: roleRef.versionId } : {}),
+    }))
   }
   return { kind: 'details', assets, errors }
-}
-
-/** 读取单个工作流模板（带批内缓存）。 */
-async function loadTemplate(
-  host: OrgCatalogHost,
-  id: string,
-  cache: Map<string, WorkflowTemplate | null>,
-): Promise<WorkflowTemplate | null> {
-  if (cache.has(id)) return cache.get(id) ?? null
-  const template = await host.store.getFlowTemplate(id)
-  cache.set(id, template)
-  return template
 }
 
 /** 单条读失败的稳定错误码（WfError 自带 code；其余按「取不到该资产」归类）。 */
@@ -181,17 +302,19 @@ export function registerWfOrgCatalog(
   const def = defineTool({
     name: WF_ORG_CATALOG,
     description:
-      'Read-only survey of the organization assets available for planning. Two call shapes: omit ids for the compact asset index (tool combos with their tool lists, official presets, provider/model plus reasoning-effort options, the orchestration rules, the role-template index, the workflow-template index, and the id convention); pass ids to recall details for those assets in one batch. '
+      'Read-only survey of the organization assets and past-run experience available for planning. Two call shapes: omit ids for the compact index (tool combos with their tool lists, official presets, provider/model plus reasoning-effort options, the orchestration rules, the workflow-asset and role-asset index, the experience index, and the id convention); pass ids to recall details for those entries in one batch. '
+      + 'Assets are reusable organization configurations promoted from templates and versioned — recall one to reuse a proven way of staffing and wiring a workflow. Experience entries record what happened in past runs and what to watch out for — recall them before planning a similar task. Neither is a template you may edit: templates are drafts and are NOT listed here. '
       + 'The index rules carry the write-patch contract: rules.patchContract (op field shapes, role-node data fields, submission rules, error-code semantics) and rules.gateMarking (milestone-gate marking rules) — read them before calling wf_graph_patch. '
-      + 'Supported ids: tpl-* (workflow template → complete skeleton: stage nodes, roles, groups, lines and data-node bodies), role-* (role template → full systemPrompt plus its mapping fields), <tpl-id>#<node-id> (inline role inside that template → full systemPrompt). Bad or missing ids come back as per-item errors and never block the others. '
+      + 'Index entries are candidates only (name/description/task context); full content is never in the index and must be recalled by id. '
+      + 'Supported ids: flow-* (workflow asset → complete skeleton: stage nodes, roles, groups, lines and data-node bodies, plus roleAssetId/roleVersionId for each role node), role-* (role asset → full systemPrompt plus its mapping fields), <flow-id>#<node-id> (inline role pinned in that workflow asset → full systemPrompt of that fixed version), ex-* (experience → full insight and evidence). At most 20 ids per call. Bad, missing or retired ids come back as per-item errors and never block the others. '
       + 'A node subagent\'s tools come ONLY from its presetId (a combo id from combos, or an official preset id), so picking presetId from this catalog is mandatory — an empty presetId means that node runs with zero tools. '
-      + 'Role-node fields retryLimit / reactLimit / promptFilePath / injectSystemPrompt / injectToolSections are owned by the canvas UI: they are neither returned here nor settable through wf_graph_patch, so never pass them. '
+      + 'Role-node fields retryLimit / reactLimit / promptFilePath / injectSystemPrompt / injectToolSections / sourceAssetId are owned by the canvas UI: they are neither returned here nor settable through wf_graph_patch, so never pass them. '
       + 'The workflow skeleton intentionally omits role systemPrompts (the longest fields) — recall them by composite id when you need to reuse them. Idempotent and side-effect free; only the parent agent may call this, child agents are rejected (WF_NOT_ROOT).',
     parameters: {
       ids: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Asset ids to recall in detail; omit (or pass []) for the compact asset index. Supported: tpl-* (workflow template), role-* (role template), <tpl-id>#<node-id> (inline role inside that template). Bad ids come back as per-item errors and never block the others. At most 20 ids per call — submit further batches when needed.',
+        description: 'Asset or experience ids to recall in detail; omit (or pass []) for the compact index. Supported: flow-* (workflow asset), role-* (role asset), <flow-id>#<node-id> (inline role pinned in that workflow asset), ex-* (experience). Bad, missing or retired ids come back as per-item errors and never block the others. At most 20 ids per call — submit further batches when needed.',
       },
     },
     output: {
@@ -200,13 +323,13 @@ export function registerWfOrgCatalog(
       schema: {
         type: 'object',
         additionalProperties: true,
-        description: 'kind="index": idConvention / detailHint / combos / presets / models / roles / templates / rules / truncated. kind="details": assets (workflow skeleton | role template | inline role) + errors (per-id failures that did not block the rest).',
+        description: 'kind="index": idConvention / detailHint / combos / presets / models / assets.workflows / assets.roles / experiences / rules / truncated. kind="details": assets (workflow skeleton | role asset | inline role | experience) + errors (per-id failures that did not block the rest).',
       },
       render: textRender,
     },
     async execute(args, exec: ToolExecLike) {
       const caller = callerOf(exec)
-      if (caller.isChild) throw new WfError('子代理无法调用 wf_org_catalog（仅当前会话主 Agent 可勘察组织资产）', 'WF_NOT_ROOT')
+      if (caller.isChild) throw new WfError('子代理无法调用 wf_org_catalog（仅当前会话主 Agent 可勘察组织资产与经验）', 'WF_NOT_ROOT')
       if (!caller.sessionId) throw new WfError('无法识别调用者会话', 'WF_BAD_CALLER')
       return executeOrgCatalog(host, (args ?? {}) as Record<string, unknown>)
     },

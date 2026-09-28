@@ -7,19 +7,29 @@
 // useEditorActions（hooks/useEditorActions.ts）单测：
 //   ① P4 父模板保存路径：saveEditor 对 source='template' 只调模板库接口保存，不派发实例变更；
 //   ② 删除落库后的画布归属校验（缺陷修复：删除在途切文档会误清新文档的画布）——
-//      在途期间已切到别的文档 → 只移除列表项、绝不清新文档画布；未切走 → 清空一次。
+//      在途期间已切到别的文档 → 只移除列表项、绝不清新文档画布；未切走 → 清空一次；
+//   ③ 模版 → 资产入库：锁定判据（纯函数）、先保存后 promote、unchanged 与重复入库分支；
+//   ④ 资产态保存（登记新版本）/ 回滚 / 退役，以及未保存守卫「保存并继续」的接续。
 //
 // 注（治理）：本文件原为 tests/client/p4-experience.test.tsx 的一部分，结构治理后
 // 按源文件归属拆分——useEditorActions 用例归入本文件。
 // （运行锁定路径下 useEditorActions 的旁路拦截用例见 hooks/canvas-lock-and-autosave.test.tsx）
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act } from 'react'
+import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import React from 'react'
-import { useEditorActions, type EditorActionsFace } from '../../../src/client/hooks/useEditorActions.js'
+import {
+  useEditorActions, isPromoteLocked, promoteLockedOf, promoteTargetOf, type EditorActionsFace,
+} from '../../../src/client/hooks/useEditorActions.js'
+import { useAssets, type AssetsFace } from '../../../src/client/hooks/useAssets.js'
+import { useUnsavedGuard, type UnsavedGuardFace } from '../../../src/client/hooks/useUnsavedGuard.js'
 import { createInitialState } from '../../../src/client/studio/studio-initial.js'
+import { studioReducer } from '../../../src/client/studio/studio-reducer.js'
 import { zh } from '../../../src/client/i18n.js'
+import { EP } from '../../../src/client/lib/remote.js'
+import type { RemoteError } from '../../../src/client/lib/remote.js'
+import type { RemoteFace } from '../../../src/client/hooks/useRemote.js'
 import type { CanvasNode, StudioState } from '../../../src/client/studio/studio-types.js'
 import type { StudioAction } from '../../../src/client/studio/studio-actions.js'
 
@@ -60,28 +70,33 @@ async function renderFace(state: StudioState, deps: {
   workflows?: unknown
   flowTemplates?: unknown
   templates?: unknown
+  assets?: unknown
   selection?: unknown
   remote?: unknown
+  saveCanvas?: unknown
 } = {}): Promise<{
   face: EditorActionsFace
   dispatched: StudioAction[]
+  toasts: Array<{ kind: string; text: string }>
   rerender: (next: StudioState) => Promise<void>
 }> {
   const dispatched: StudioAction[] = []
+  const toasts: Array<{ kind: string; text: string }> = []
   let face: EditorActionsFace | null = null
   function Probe({ current }: { current: StudioState }): null {
     face = useEditorActions(
       current,
       ((action: StudioAction) => { dispatched.push(action) }) as never,
-      (() => {}) as never,
+      ((kind: 'info' | 'success' | 'error', text: string) => { toasts.push({ kind, text }) }) as never,
       (() => {}) as never,
       zh,
       (deps.workflows ?? {}) as never,
       (deps.flowTemplates ?? {}) as never,
       (deps.templates ?? {}) as never,
+      (deps.assets ?? {}) as never,
       (deps.selection ?? {}) as never,
       (deps.remote ?? {}) as never,
-      (async () => null) as never,
+      (deps.saveCanvas ?? (async () => null)) as never,
       (() => {}) as never,
       (() => {}) as never,
       (() => {}) as never,
@@ -91,12 +106,15 @@ async function renderFace(state: StudioState, deps: {
     return null
   }
   await act(async () => {
+    // 同一用例内二次装配（换假远端重跑）时必须先卸载旧根，否则容器里残留两份界面
+    if (root) { root.unmount(); root = null }
     root = createRoot(container!)
     root.render(React.createElement(Probe, { current: state }))
   })
   return {
     face: face!,
     dispatched,
+    toasts,
     rerender: async (next: StudioState) => {
       await act(async () => {
         root!.render(React.createElement(Probe, { current: next }))
@@ -272,5 +290,618 @@ describe('删除在途切文档：画布归属校验（不清新文档画布）'
     expect(call).toHaveBeenCalledTimes(1)
     expect(dispatched.some((action) => action.type === 'CLEAR_CANVAS')).toBe(false)
     expect(dispatched.some((action) => action.type === 'SERVICE_REMOVED')).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 资产态（模版 → 资产入库 / 资产态保存 / 回滚 / 退役）夹具与装配
+// ---------------------------------------------------------------------------
+
+/** 调用记录 + 可编排响应的假远端面（与 useAssets 用例同口径）。 */
+function makeRemote(handler: (endpoint: string, args: Record<string, unknown>) => unknown): {
+  remote: RemoteFace
+  calls: Array<{ endpoint: string; args: Record<string, unknown> }>
+} {
+  const calls: Array<{ endpoint: string; args: Record<string, unknown> }> = []
+  const remote: RemoteFace = {
+    stream: vi.fn(async () => undefined),
+    call: vi.fn(async (endpoint: string, args?: Record<string, unknown>) => {
+      const safe = args ?? {}
+      calls.push({ endpoint, args: safe })
+      return handler(endpoint, safe)
+    }),
+  }
+  return { remote, calls }
+}
+
+/** 稳定错误码错误（模拟网络边界抛出的业务失败）。 */
+function remoteError(message: string, code: string): RemoteError {
+  const error = new Error(message) as RemoteError
+  error.code = code
+  return error
+}
+
+/** 工作流资产 Active 详情夹具（画布打开态）。 */
+const WORKFLOW_DETAIL = {
+  assetId: 'a-1', versionId: 2, rowId: 'a-1@2', mode: 'mode1', name: '资产一', description: '资产描述',
+  nodes: [{ id: 'n-old', kind: 'agent', position: { x: 0, y: 0 }, data: { label: '旧' } }],
+  lines: [], roleVersionIds: [], createdAt: 1,
+}
+
+/** 角色资产 Active 详情夹具（字段域与 RoleAssetDetail 一致）。 */
+const ROLE_DETAIL = {
+  assetId: 'a-r1', versionId: 1, rowId: 'a-r1@1', kind: 'agent', roleAssetType: 'shared',
+  name: '资产角色', systemPrompt: '提示词', provider: 'deepseek', model: 'deepseek-chat',
+  reasoning: 'high', presetId: 'standard', retryLimit: 5, reactLimit: 7,
+  inputSchema: 'in', outputSchema: 'out',
+  systemPromptSource: 'a.md', injectSystemPrompt: false, injectToolSections: true,
+  promptFilePath: 'D:\\p.md', referenceWorkflowIds: ['a-1@1', 'a-2@1'], createdAt: 1,
+}
+
+/** 资产态集成装配：真实 useAssets + useUnsavedGuard + useEditorActions（共用一份假远端）。 */
+interface AssetHarness {
+  editor: EditorActionsFace
+  guard: UnsavedGuardFace
+  assets: AssetsFace
+  dispatched: StudioAction[]
+  toasts: Array<{ kind: string; text: string }>
+  errors: unknown[]
+  rerender(next: StudioState): Promise<void>
+}
+
+async function renderAssetHarness(state: StudioState, deps: {
+  remote: RemoteFace
+  workflows?: unknown
+  flowTemplates?: unknown
+  templates?: unknown
+  saveCanvas?: unknown
+}): Promise<AssetHarness> {
+  const dispatched: StudioAction[] = []
+  const toasts: Array<{ kind: string; text: string }> = []
+  const errors: unknown[] = []
+  let editor: EditorActionsFace | null = null
+  let guard: UnsavedGuardFace | null = null
+  let assets: AssetsFace | null = null
+  const noop = (): void => {}
+  function Probe({ current }: { current: StudioState }): null {
+    const dispatch = ((action: StudioAction) => { dispatched.push(action) }) as never
+    const notify = ((kind: 'info' | 'success' | 'error', text: string) => { toasts.push({ kind, text }) }) as never
+    const toastError = ((error: unknown) => { errors.push(error) }) as never
+    const a = useAssets(deps.remote, dispatch, notify, toastError, zh, current)
+    const g = useUnsavedGuard(current, dispatch)
+    const e = useEditorActions(
+      current, dispatch, notify, toastError, zh,
+      (deps.workflows ?? {}) as never,
+      (deps.flowTemplates ?? {}) as never,
+      (deps.templates ?? {}) as never,
+      a,
+      {} as never,
+      deps.remote,
+      (deps.saveCanvas ?? (async () => null)) as never,
+      noop, noop, noop, noop,
+      unlocked,
+    )
+    useEffect(() => { assets = a; guard = g; editor = e }, [a, g, e])
+    return null
+  }
+  const render = async (next: StudioState): Promise<void> => {
+    await act(async () => {
+      if (root) { root.unmount(); root = null }
+      root = createRoot(container!)
+      root.render(React.createElement(Probe, { current: next }))
+    })
+  }
+  await render(state)
+  return {
+    get editor() { return editor! },
+    get guard() { return guard! },
+    get assets() { return assets! },
+    dispatched,
+    toasts,
+    errors,
+    rerender: async (next: StudioState) => {
+      await act(async () => { root!.render(React.createElement(Probe, { current: next })) })
+    },
+  }
+}
+
+/** 打开在画布上的工作流资产态（画布含一个未保存的新节点）。 */
+function flowAssetState(overrides: Partial<StudioState> = {}): StudioState {
+  const node: CanvasNode = { id: 'n-new', kind: 'agent', position: { x: 10, y: 20 }, data: { label: '新' } }
+  return {
+    ...createInitialState('s-1'),
+    currentKind: 'flowAsset',
+    currentId: 'a-1',
+    editor: { source: 'flowAsset', id: 'a-1' },
+    assetDoc: WORKFLOW_DETAIL as never,
+    canvas: { nodes: [node], edges: [] },
+    dirty: true,
+    ...overrides,
+  }
+}
+
+/** 属性栏编辑中的角色资产态（不在画布上）。 */
+function roleAssetState(overrides: Partial<StudioState> = {}): StudioState {
+  return {
+    ...createInitialState('s-1'),
+    editor: { source: 'roleAsset', id: 'a-r1' },
+    assetRoleDoc: ROLE_DETAIL as never,
+    ...overrides,
+  }
+}
+
+/** 资产写入端点的固定响应（列表端点返回空列表）。 */
+function assetWriteRemote(write: { endpoint: string; value: unknown }): ReturnType<typeof makeRemote> {
+  return makeRemote((endpoint) => {
+    if (endpoint === write.endpoint) return write.value
+    if (endpoint === EP.EP_GET_ASSET) return WORKFLOW_DETAIL
+    return { workflows: [], roles: [] }
+  })
+}
+
+describe('模版 → 资产入库：目标与锁定判据（纯函数）', () => {
+  const base = createInitialState('s-1')
+
+  it('promoteTargetOf：工作流模版 → workflow、角色模版 → role；其余编辑器无入库目标', () => {
+    expect(promoteTargetOf({ ...base, editor: { source: 'flowTemplate', id: 'tpl-1' } }))
+      .toEqual({ kind: 'workflow', templateId: 'tpl-1' })
+    expect(promoteTargetOf({ ...base, editor: { source: 'template', kind: 'role', id: 'r-1' } }))
+      .toEqual({ kind: 'role', templateId: 'r-1' })
+    // 文件/数据库/协作组模板不提供入库；实例态与资产态同样没有入库目标
+    expect(promoteTargetOf({ ...base, editor: { source: 'template', kind: 'file', id: 'f-1' } })).toBeNull()
+    expect(promoteTargetOf({ ...base, editor: { source: 'workflow', id: 'wf-1' } })).toBeNull()
+    expect(promoteTargetOf({ ...base, editor: { source: 'flowAsset', id: 'a-1' } })).toBeNull()
+    expect(promoteTargetOf(base)).toBeNull()
+  })
+
+  it('isPromoteLocked：模版绑定 + 指纹相同 → 锁定（模版未再修改）', () => {
+    const summaries = [{ sourceTemplateId: 'tpl-1', sourceFingerprint: 'fp-1', currentTemplateFingerprint: 'fp-1' }]
+    expect(isPromoteLocked(summaries, 'tpl-1')).toBe(true)
+  })
+
+  it('isPromoteLocked：模版内容已变化（指纹不同）→ 未锁定', () => {
+    const summaries = [{ sourceTemplateId: 'tpl-1', sourceFingerprint: 'fp-1', currentTemplateFingerprint: 'fp-2' }]
+    expect(isPromoteLocked(summaries, 'tpl-1')).toBe(false)
+  })
+
+  it('isPromoteLocked：无绑定 / 模版已删除（指纹缺失）→ 未锁定', () => {
+    expect(isPromoteLocked([], 'tpl-1')).toBe(false)
+    expect(isPromoteLocked([{ sourceTemplateId: 'tpl-other', sourceFingerprint: 'fp-1', currentTemplateFingerprint: 'fp-1' }], 'tpl-1')).toBe(false)
+    expect(isPromoteLocked([{ sourceTemplateId: 'tpl-1', sourceFingerprint: 'fp-1' }], 'tpl-1')).toBe(false)
+  })
+
+  it('promoteLockedOf：按当前编辑器的模版种类取对应资产列表判定', () => {
+    const assets = {
+      workflows: [{ assetId: 'a-1', versionId: 1, name: '工作流资产', description: '', sourceTemplateId: 'tpl-1', sourceFingerprint: 'fp', currentTemplateFingerprint: 'fp', updatedAt: 1 }],
+      roles: [{ assetId: 'a-r1', versionId: 1, name: '角色资产', kind: 'agent' as const, roleAssetType: 'standalone' as const, sourceTemplateId: 'r-1', sourceFingerprint: 'fp', currentTemplateFingerprint: 'fp-2', updatedAt: 1 }],
+    }
+    expect(promoteLockedOf({ ...base, editor: { source: 'flowTemplate', id: 'tpl-1' }, assets })).toBe(true)
+    expect(promoteLockedOf({ ...base, editor: { source: 'template', kind: 'role', id: 'r-1' }, assets })).toBe(false)
+  })
+})
+
+describe('模版 → 资产入库：编排（先保存，保存未落库即中止）', () => {
+  it('工作流模版：先落模版（画布保存）再 promoteAsset，成功提示已入库', async () => {
+    const order: string[] = []
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_PROMOTE_ASSET) { order.push('promote'); return { assetId: 'a-1', versionId: 1, rowId: 'a-1@1', unchanged: false } }
+      return { workflows: [], roles: [] }
+    })
+    const saveCanvas = vi.fn(async () => { order.push('save'); return { id: 'tpl-1' } })
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      currentKind: 'flowTemplate',
+      currentId: 'tpl-1',
+      editor: { source: 'flowTemplate', id: 'tpl-1' },
+    }
+    const harness = await renderAssetHarness(state, { remote, saveCanvas })
+
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(order).toEqual(['save', 'promote'])
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_PROMOTE_ASSET, EP.EP_LIST_ASSETS])
+    expect(calls[0]!.args).toEqual({ kind: 'workflow', templateId: 'tpl-1' })
+    expect(harness.toasts.map((toast) => toast.text)).toEqual([zh.toastAssetPromoted.replace('{id}', 'a-1').replace('{version}', '1')])
+  })
+
+  it('保存未落库（saveCanvas 返回 null）→ 中止，不调 promoteAsset', async () => {
+    const { remote, calls } = makeRemote(() => ({ workflows: [], roles: [] }))
+    const saveCanvas = vi.fn(async () => null)
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      currentKind: 'flowTemplate',
+      currentId: 'tpl-1',
+      editor: { source: 'flowTemplate', id: 'tpl-1' },
+    }
+    const harness = await renderAssetHarness(state, { remote, saveCanvas })
+
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(saveCanvas).toHaveBeenCalledTimes(1)
+    expect(calls).toEqual([])
+    expect(harness.toasts).toEqual([])
+  })
+
+  it('角色模版：先落模板库再 promoteAsset(kind=role)；保存失败不入库', async () => {
+    const roleTemplate = { id: 'r-1', kind: 'agent', name: '角色', systemPrompt: '提示词' }
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      editor: { source: 'template', kind: 'role', id: 'r-1' },
+      templates: { ...createInitialState('s-1').templates, role: [roleTemplate as never] },
+    }
+    const saveTemplate = vi.fn(async () => {})
+    const first = makeRemote(() => ({ assetId: 'a-r1', versionId: 1, rowId: 'a-r1@1', unchanged: false, roleAssetType: 'standalone' }))
+    const harness = await renderAssetHarness(state, { remote: first.remote, templates: { saveTemplate } })
+
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(saveTemplate).toHaveBeenCalledWith('role', roleTemplate)
+    expect(first.calls[0]).toEqual({ endpoint: EP.EP_PROMOTE_ASSET, args: { kind: 'role', templateId: 'r-1' } })
+
+    // 保存失败（模板库抛错）：中止入库且不静默吞错
+    const failure = new Error('put failed')
+    const second = await renderAssetHarness(state, {
+      remote: makeRemote(() => ({ workflows: [], roles: [] })).remote,
+      templates: { saveTemplate: vi.fn(async () => { throw failure }) },
+    })
+    await act(async () => { await second.editor.promoteEditor() })
+    expect(second.errors).toEqual([failure])
+  })
+
+  it('后端幂等短路（unchanged）→ 只提示「内容未变化，未新增版本」，不谎报已入库', async () => {
+    const { remote } = assetWriteRemote({ endpoint: EP.EP_PROMOTE_ASSET, value: { assetId: 'a-1', versionId: 1, rowId: 'a-1@1', unchanged: true } })
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      currentKind: 'flowTemplate',
+      currentId: 'tpl-1',
+      editor: { source: 'flowTemplate', id: 'tpl-1' },
+    }
+    const harness = await renderAssetHarness(state, { remote, saveCanvas: vi.fn(async () => ({ id: 'tpl-1' })) })
+
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(harness.toasts).toEqual([{ kind: 'info', text: zh.assetPromoteUnchanged }])
+  })
+
+  it('ERR_ASSET_DUPLICATE：按重复入库语义提示且不刷新列表、不报错', async () => {
+    const { remote, calls } = makeRemote(() => { throw remoteError('duplicate', EP.ERR_ASSET_DUPLICATE) })
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      currentKind: 'flowTemplate',
+      currentId: 'tpl-1',
+      editor: { source: 'flowTemplate', id: 'tpl-1' },
+    }
+    const harness = await renderAssetHarness(state, { remote, saveCanvas: vi.fn(async () => ({ id: 'tpl-1' })) })
+
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_PROMOTE_ASSET])
+    expect(harness.toasts).toEqual([{ kind: 'info', text: zh.assetDuplicateCancelled }])
+    expect(harness.errors).toEqual([])
+  })
+
+  it('已入库且模版未再修改：promoteEditor 旁路兜底不入库（按钮禁用之外的第二道防线）', async () => {
+    const { remote, calls } = makeRemote(() => ({ workflows: [], roles: [] }))
+    const saveCanvas = vi.fn(async () => ({ id: 'tpl-1' }))
+    const state: StudioState = {
+      ...createInitialState('s-1'),
+      currentKind: 'flowTemplate',
+      currentId: 'tpl-1',
+      editor: { source: 'flowTemplate', id: 'tpl-1' },
+      assets: {
+        workflows: [{ assetId: 'a-1', versionId: 1, name: '资产', description: '', sourceTemplateId: 'tpl-1', sourceFingerprint: 'fp', currentTemplateFingerprint: 'fp', updatedAt: 1 }],
+        roles: [],
+      },
+    }
+    const harness = await renderAssetHarness(state, { remote, saveCanvas })
+
+    expect(harness.editor.promoteLocked).toBe(true)
+    await act(async () => { await harness.editor.promoteEditor() })
+
+    expect(saveCanvas).not.toHaveBeenCalled()
+    expect(calls).toEqual([])
+  })
+})
+
+describe('资产态保存（登记新版本）', () => {
+  it('flowAsset：saveAssetVersion(kind=workflow) 内容取画布与 assetDoc，成功后重装载并重投影画布', async () => {
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_SAVE_ASSET_VERSION) return { assetId: 'a-1', versionId: 3, rowId: 'a-1@3', unchanged: false }
+      if (endpoint === EP.EP_GET_ASSET) return { ...WORKFLOW_DETAIL, versionId: 3, rowId: 'a-1@3' }
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    let result: unknown = null
+    await act(async () => { result = await harness.editor.saveEditor() })
+
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_SAVE_ASSET_VERSION, EP.EP_LIST_ASSETS, EP.EP_GET_ASSET])
+    expect(calls[0]!.args).toEqual({
+      kind: 'workflow',
+      assetId: 'a-1',
+      payload: {
+        mode: 'mode1',
+        name: '资产一',
+        description: '资产描述',
+        nodes: [{ id: 'n-new', kind: 'agent', position: { x: 10, y: 20 }, data: { label: '新' } }],
+        lines: [],
+      },
+    })
+    expect(harness.toasts).toEqual([{ kind: 'success', text: zh.toastAssetVersionSaved.replace('{id}', 'a-1').replace('{version}', '3') }])
+    // 非 null = 本次已真实落库（未保存守卫据此接续）；重投影画布 = OPEN_FLOW_ASSET（清除 dirty）
+    expect(result).not.toBeNull()
+    expect(harness.dispatched.map((action) => action.type)).toContain('ASSET_DOC_LOADED')
+    expect(harness.dispatched.at(-1)).toEqual({ type: 'OPEN_FLOW_ASSET', assetId: 'a-1' })
+  })
+
+  it('flowAsset：详情重装载失败 → 不重投影画布（未落库的画布编辑不丢）', async () => {
+    const { remote } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_SAVE_ASSET_VERSION) return { assetId: 'a-1', versionId: 3, rowId: 'a-1@3', unchanged: false }
+      if (endpoint === EP.EP_GET_ASSET) throw remoteError('gone', EP.ERR_ASSET_NOT_FOUND)
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    await act(async () => { await harness.editor.saveEditor() })
+
+    expect(harness.dispatched.some((action) => action.type === 'OPEN_FLOW_ASSET')).toBe(false)
+  })
+
+  it('roleAsset：saveAssetVersion(kind=role) 上报角色字段投影，成功后重装载详情', async () => {
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_SAVE_ASSET_VERSION) return { assetId: 'a-r1', versionId: 2, rowId: 'a-r1@2', unchanged: false, roleAssetType: 'shared' }
+      if (endpoint === EP.EP_GET_ASSET) return { ...ROLE_DETAIL, versionId: 2, rowId: 'a-r1@2' }
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(roleAssetState(), { remote })
+
+    let result: unknown = null
+    await act(async () => { result = await harness.editor.saveEditor() })
+
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_SAVE_ASSET_VERSION, EP.EP_LIST_ASSETS, EP.EP_GET_ASSET])
+    expect(calls[0]!.args).toEqual({
+      kind: 'role',
+      assetId: 'a-r1',
+      payload: {
+        kind: 'agent',
+        name: '资产角色',
+        systemPrompt: '提示词',
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        reasoning: 'high',
+        presetId: 'standard',
+        retryLimit: 5,
+        reactLimit: 7,
+        inputSchema: 'in',
+        outputSchema: 'out',
+        systemPromptSource: 'a.md',
+        injectSystemPrompt: false,
+        injectToolSections: true,
+        promptFilePath: 'D:\\p.md',
+      },
+    })
+    expect(result).not.toBeNull()
+    expect(harness.toasts).toEqual([{ kind: 'success', text: zh.toastAssetVersionSaved.replace('{id}', 'a-r1').replace('{version}', '2') }])
+    // 角色资产不在画布上：重装载 Active 详情（新版本号/行 id 与属性栏同源），不重投影画布
+    expect(harness.dispatched.map((action) => action.type)).toEqual(['ASSETS_LOADED', 'ROLE_ASSET_LOADED'])
+  })
+
+  it('资产态保存失败：不重装载、不提示成功、返回值 null', async () => {
+    const failure = new Error('boom')
+    const { remote } = makeRemote(() => { throw failure })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    let result: unknown = 'sentinel'
+    await act(async () => { result = await harness.editor.saveEditor() })
+
+    expect(result).toBeNull()
+    expect(harness.errors).toEqual([failure])
+    expect(harness.dispatched).toEqual([])
+  })
+
+  it('未保存守卫「保存并继续」：资产态保存真实落库后接续原操作', async () => {
+    const { remote, calls } = assetWriteRemote({ endpoint: EP.EP_SAVE_ASSET_VERSION, value: { assetId: 'a-1', versionId: 3, rowId: 'a-1@3', unchanged: false } })
+    let proceeded = false
+    const harness = await renderAssetHarness(flowAssetState({
+      confirm: { kind: 'unsaved', proceed: () => { proceeded = true } },
+    }), { remote })
+
+    await act(async () => {
+      await harness.guard.saveAndProceed((onSaved) => harness.editor.saveEditor({ onSaved }))
+    })
+
+    expect(calls[0]!.endpoint).toBe(EP.EP_SAVE_ASSET_VERSION)
+    expect(proceeded).toBe(true)
+  })
+
+  it('未保存守卫「保存并继续」：资产态保存失败不继续（未保存内容不丢）', async () => {
+    const { remote } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_SAVE_ASSET_VERSION) throw remoteError('gone', EP.ERR_ASSET_NOT_FOUND)
+      return { workflows: [], roles: [] }
+    })
+    let proceeded = false
+    const harness = await renderAssetHarness(flowAssetState({
+      confirm: { kind: 'unsaved', proceed: () => { proceeded = true } },
+    }), { remote })
+
+    await act(async () => {
+      await harness.guard.saveAndProceed((onSaved) => harness.editor.saveEditor({ onSaved }))
+    })
+
+    expect(proceeded).toBe(false)
+  })
+})
+
+describe('资产版本回滚', () => {
+  it('openAssetVersions：按当前资产 kind/assetId 装载版本列表', async () => {
+    const items = [{ versionId: 2, rowId: 'a-1@2', name: 'v2', createdAt: 2, source: 'human', active: true }]
+    const { remote, calls } = makeRemote((endpoint) => (endpoint === EP.EP_LIST_ASSET_VERSIONS ? items : { workflows: [], roles: [] }))
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    await act(async () => { await harness.editor.openAssetVersions() })
+
+    expect(calls[0]).toEqual({ endpoint: EP.EP_LIST_ASSET_VERSIONS, args: { kind: 'workflow', assetId: 'a-1' } })
+    expect(harness.dispatched).toEqual([{ type: 'ASSET_VERSIONS_LOADED', kind: 'workflow', assetId: 'a-1', items }])
+  })
+
+  it('rollbackAssetVersion：回滚 Active 指针后收起版本列表（不新增版本）', async () => {
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_ROLLBACK_ASSET) return WORKFLOW_DETAIL
+      if (endpoint === EP.EP_GET_ASSET) return WORKFLOW_DETAIL
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    await act(async () => { await harness.editor.rollbackAssetVersion(1) })
+
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_ROLLBACK_ASSET, EP.EP_GET_ASSET, EP.EP_LIST_ASSETS])
+    expect(calls[0]!.args).toEqual({ kind: 'workflow', assetId: 'a-1', versionId: 1 })
+    expect(harness.dispatched.at(-1)).toEqual({ type: 'ASSET_VERSIONS_CLOSED' })
+  })
+
+  it('rollbackAssetVersion：回滚失败不收起版本列表（保留现场，可直接改选另一版本重试）', async () => {
+    const { remote } = makeRemote(() => { throw remoteError('not found', EP.ERR_ASSET_NOT_FOUND) })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    await act(async () => { await harness.editor.rollbackAssetVersion(1) })
+
+    expect(harness.dispatched.some((action) => action.type === 'ASSET_VERSIONS_CLOSED')).toBe(false)
+  })
+})
+
+describe('资产退役（二次确认 + 级联提示）', () => {
+  it('工作流资产：二次确认后 retireAsset + 清空已打开资产', async () => {
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_RETIRE_ASSET) return { kind: 'workflow', assetId: 'a-1', retired: true }
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(flowAssetState(), { remote })
+
+    await act(async () => { await harness.editor.deleteEditor() })
+    const confirm = lastConfirm(harness.dispatched) as { title?: string; message?: string; onConfirm?: () => void } | undefined
+    expect(confirm?.title).toBe(zh.assetRetireTitle)
+    expect(confirm?.message).toBe(zh.assetRetireMessage)
+
+    await act(async () => {
+      confirm!.onConfirm?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(calls.map((call) => call.endpoint)).toEqual([EP.EP_RETIRE_ASSET, EP.EP_LIST_ASSETS])
+    expect(calls[0]!.args).toEqual({ kind: 'workflow', assetId: 'a-1' })
+    expect(harness.dispatched).toContainEqual({ type: 'ASSET_CLOSED', assetId: 'a-1' })
+  })
+
+  it('shared 角色资产：确认文案追加级联提示并带引用数', async () => {
+    const { remote, calls } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_RETIRE_ASSET) return { kind: 'role', assetId: 'a-r1', retired: true }
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderAssetHarness(roleAssetState(), { remote })
+
+    await act(async () => { await harness.editor.deleteEditor() })
+    const confirm = lastConfirm(harness.dispatched) as { message?: string; onConfirm?: () => void } | undefined
+
+    expect(confirm?.message).toBe(zh.assetRetireSharedMessage.replace('{count}', '2'))
+    expect(confirm?.message).not.toContain('{count}')
+
+    await act(async () => {
+      confirm!.onConfirm?.()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(calls[0]).toEqual({ endpoint: EP.EP_RETIRE_ASSET, args: { kind: 'role', assetId: 'a-r1' } })
+    expect(harness.dispatched).toContainEqual({ type: 'ASSET_CLOSED', assetId: 'a-r1' })
+  })
+
+  it('非 shared 角色资产：使用普通退役确认文案', async () => {
+    const harness = await renderAssetHarness(roleAssetState({
+      assetRoleDoc: { ...ROLE_DETAIL, roleAssetType: 'standalone', referenceWorkflowIds: [] } as never,
+    }), { remote: makeRemote(() => ({ workflows: [], roles: [] })).remote })
+
+    await act(async () => { await harness.editor.deleteEditor() })
+
+    const confirm = lastConfirm(harness.dispatched) as { message?: string } | undefined
+    expect(confirm?.message).toBe(zh.assetRetireMessage)
+  })
+})
+
+describe('资产态属性栏 patch', () => {
+  it('roleAsset：字段写回 assetRoleDoc（label 消毒为 name）', async () => {
+    const { face, dispatched } = await renderFace(roleAssetState())
+
+    act(() => { face.patchEditor({ label: '新名字', systemPrompt: '改后的提示词' }) })
+
+    expect(dispatched).toEqual([{ type: 'ROLE_ASSET_PATCH', patch: { name: '新名字', systemPrompt: '改后的提示词' } }])
+  })
+
+  it('flowAsset：名/描述走 DOC_PATCH（与实例/模版同路径）', async () => {
+    const { face, dispatched } = await renderFace(flowAssetState())
+
+    act(() => { face.patchEditor({ name: '新名字' }) })
+
+    expect(dispatched).toEqual([{ type: 'DOC_PATCH', patch: { name: '新名字', description: undefined } }])
+  })
+})
+
+describe('资产态保存与状态机联动（真实 reducer）', () => {
+  /** 真实状态机 + 资产面 + 编辑器面（验证 dispatch 落到 reducer 后的最终状态）。 */
+  async function renderReducerHarness(initial: StudioState, remote: RemoteFace): Promise<{
+    editor: EditorActionsFace
+    state: StudioState
+  }> {
+    let editor: EditorActionsFace | null = null
+    let live: StudioState = initial
+    const noop = (): void => {}
+    function Probe(): null {
+      const [state, dispatch] = React.useReducer(studioReducer, initial)
+      live = state
+      const assets = useAssets(remote, dispatch as never, noop as never, noop as never, zh, state)
+      const e = useEditorActions(
+        state, dispatch as never, noop as never, noop as never, zh,
+        {} as never, {} as never, {} as never, assets, {} as never, remote,
+        (async () => null) as never,
+        noop, noop, noop, noop,
+        unlocked,
+      )
+      useEffect(() => { editor = e }, [e])
+      return null
+    }
+    await act(async () => {
+      if (root) { root.unmount(); root = null }
+      root = createRoot(container!)
+      root.render(React.createElement(Probe))
+    })
+    return {
+      get editor() { return editor! },
+      get state() { return live },
+    }
+  }
+
+  it('flowAsset 保存成功后：dirty 清除、画布重投影为服务端最新详情（对齐实例态保存语义）', async () => {
+    const { remote } = makeRemote((endpoint) => {
+      if (endpoint === EP.EP_SAVE_ASSET_VERSION) return { assetId: 'a-1', versionId: 3, rowId: 'a-1@3', unchanged: false }
+      if (endpoint === EP.EP_GET_ASSET) {
+        return {
+          ...WORKFLOW_DETAIL,
+          versionId: 3,
+          rowId: 'a-1@3',
+          nodes: [{ id: 'n-server', kind: 'agent', position: { x: 1, y: 2 }, data: { label: '服务端' } }],
+        }
+      }
+      return { workflows: [], roles: [] }
+    })
+    const harness = await renderReducerHarness(flowAssetState(), remote)
+    expect(harness.state.dirty).toBe(true)
+    expect(harness.state.canvas.nodes.map((node) => node.id)).toEqual(['n-new'])
+
+    await act(async () => { await harness.editor.saveEditor() })
+
+    expect(harness.state.dirty).toBe(false)
+    expect(harness.state.assetDoc?.versionId).toBe(3)
+    expect(harness.state.canvas.nodes.map((node) => node.id)).toEqual(['n-server'])
+    expect(harness.state.savedGraph?.nodes.map((node) => node.id)).toEqual(['n-server'])
   })
 })

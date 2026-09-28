@@ -1,5 +1,5 @@
 import type { Dict } from '../../../i18n.js';
-import type { EditorData } from '../../../studio/studio-state.js';
+import type { EditorData, StudioState } from '../../../studio/studio-state.js';
 export interface InspectorProps {
     copy: Dict;
     open: boolean;
@@ -33,6 +33,18 @@ export interface InspectorProps {
     onSave(): void;
     /** 图2 交互改造：实例 → 模板（另存为模板；用户裁决提供入口）。 */
     onSaveAsTemplate?(): void;
+    /** 模版 → 资产入库（工作流模版 / 角色模版；先保存模版，失败即中止）。 */
+    onPromote?(): void;
+    /** 入库按钮锁定：已入库且模版内容未再修改（纯函数判定由调用方给出）。 */
+    promoteLocked?: boolean;
+    /** 打开资产版本上拉列表（资产态回滚选择）。 */
+    onOpenVersions?(): void;
+    /** 回滚 Active 指针到所选历史版本。 */
+    onRollbackVersion?(versionId: number): void;
+    /** 收起版本列表（清空版本数据面）。 */
+    onCloseVersions?(): void;
+    /** 已装载的版本列表（null = 未打开/装载中）。 */
+    assetVersions?: StudioState['assetVersions'];
     onCopyProxy(): void;
     onRemoveMember(memberId: string): void;
     onFileSelect(files: File[]): void;

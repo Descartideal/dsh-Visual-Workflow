@@ -1,6 +1,7 @@
-import type { LibTab, LibSelKind, TemplateKind, CanvasNode, CanvasEdge, EditorRef, PanelLayout, ToastItem, PresetItem, ToolItem, ModelItem, GraphSnapshot, ConfirmState } from './studio-types.js';
+import type { LibTab, LibSelKind, TemplateKind, CanvasNode, CanvasEdge, EditorRef, PanelLayout, ToastItem, PresetItem, ToolItem, ModelItem, GraphSnapshot, ConfirmState, LibrarySource } from './studio-types.js';
 import type { WorkflowDocument, WorkflowTemplate } from '../../host/shared/graph-model.js';
 import type { ServiceState, RoleTemplate, FileTemplate, DatabaseTemplate, GroupTemplate, ToolCombo, RunSnapshot } from '../../host/shared/types.js';
+import type { AssetKind, AssetVersionEntry, RoleAssetDetail, RoleAssetSummary, WorkflowAssetDetail, WorkflowAssetSummary } from '../../host/shared/asset-types.js';
 export type StudioAction = {
     type: 'SET_SESSION';
     sessionId: string;
@@ -10,6 +11,61 @@ export type StudioAction = {
 } | {
     type: 'SET_LIB_TAB';
     tab: LibTab;
+}
+/** 左侧库来源切换（模版 / 资产；画布文档类型随来源切换，复合行为由 hook 编排）。 */
+ | {
+    type: 'SET_LIBRARY_SOURCE';
+    source: LibrarySource;
+}
+/** 库搜索关键词（两态共用）。 */
+ | {
+    type: 'SET_LIB_SEARCH';
+    query: string;
+}
+/** 资产列表（Active 索引）加载完成。 */
+ | {
+    type: 'ASSETS_LOADED';
+    workflows: WorkflowAssetSummary[];
+    roles: RoleAssetSummary[];
+}
+/** 工作流资产详情装载（随后由 OPEN_FLOW_ASSET 把画布切到该资产文档）。 */
+ | {
+    type: 'ASSET_DOC_LOADED';
+    detail: WorkflowAssetDetail;
+}
+/** 角色资产详情装载（属性栏编辑数据源）。 */
+ | {
+    type: 'ROLE_ASSET_LOADED';
+    detail: RoleAssetDetail;
+}
+/** 打开工作流资产文档（画布节点/连线取自已装载的 assetDoc）。 */
+ | {
+    type: 'OPEN_FLOW_ASSET';
+    assetId: string;
+}
+/** 打开角色资产（属性栏编辑）。 */
+ | {
+    type: 'OPEN_ROLE_ASSET';
+    assetId: string;
+}
+/** 角色资产属性栏字段编辑（写回 assetRoleDoc；名称由调用方消毒为 name）。 */
+ | {
+    type: 'ROLE_ASSET_PATCH';
+    patch: Record<string, unknown>;
+}
+/** 资产版本列表装载（回滚上拉列表数据面）。 */
+ | {
+    type: 'ASSET_VERSIONS_LOADED';
+    kind: AssetKind;
+    assetId: string;
+    items: AssetVersionEntry[];
+} | {
+    type: 'ASSET_VERSIONS_CLOSED';
+}
+/** 资产关闭（退役/不可见）：清空该资产的详情槽；正打开在画布或属性栏时一并清空。 */
+ | {
+    type: 'ASSET_CLOSED';
+    assetId: string;
 } | {
     type: 'WORKFLOWS_LOADED';
     items: WorkflowDocument[];

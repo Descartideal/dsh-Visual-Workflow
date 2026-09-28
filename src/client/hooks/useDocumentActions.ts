@@ -8,7 +8,8 @@ import { useCallback } from 'react'
 import type { Dispatch } from 'react'
 import type { WorkflowDocument, WorkflowTemplate } from '../../host/shared/graph-model.js'
 import type { ServiceState } from '../../host/shared/types.js'
-import { currentFlowOf, currentFlowTemplateOf, currentServiceOf, instanceRunningOf, type CanvasEdge, type CanvasNode, type LibTab, type StudioAction, type StudioState } from '../studio/studio-state.js'
+import type { WorkflowAssetDetail } from '../../host/shared/asset-types.js'
+import { currentFlowOf, currentFlowTemplateOf, currentServiceOf, instanceRunningOf, isInstanceSourceKind, type CanvasEdge, type CanvasNode, type LibTab, type StudioAction, type StudioState } from '../studio/studio-state.js'
 import type { WorkflowsFace } from './useWorkflows.js'
 import type { FlowTemplatesFace } from './useFlowTemplates.js'
 import type { TemplatesFace } from './useTemplates.js'
@@ -66,6 +67,29 @@ export interface DocumentActionsFace {
   selectFlowTemplate(id: string): void
   /** 新建（工作流 Tab / 角色 / 数据分区 / 协作组分区；+ 号新建模板）。 */
   createNew(tab: LibTab, section?: 'file' | 'database' | 'flowTemplate' | 'group'): void
+}
+
+/** 工作流资产详情 → 模板形状（实例化通道只消费 mode/name/description/nodes/lines/meta；id 仅为占位）。 */
+function assetAsTemplate(detail: WorkflowAssetDetail): WorkflowTemplate {
+  return {
+    id: `asset-${detail.assetId}`,
+    mode: detail.mode,
+    name: detail.name,
+    description: detail.description,
+    nodes: detail.nodes,
+    lines: detail.lines,
+    ...(detail.meta ? { meta: detail.meta } : {}),
+  }
+}
+
+/**
+ * 当前「实例来源」文档（模版态 / 资产态）：两种来源的实例化语义一致
+ * （画布内容 → 新实例），差异只在元信息来源。返回 null = 没有可实例化的来源。
+ */
+function instanceSourceOf(state: StudioState): WorkflowTemplate | null {
+  if (state.currentKind === 'flowTemplate') return currentFlowTemplateOf(state)
+  if (state.currentKind === 'flowAsset') return state.assetDoc ? assetAsTemplate(state.assetDoc) : null
+  return null
 }
 
 /** 文档生命周期面（保存失败抛错/提示由保存路径处理）。 */
@@ -162,6 +186,11 @@ export function useDocumentActions(
         return null
       }
     }
+    if (state.currentKind === 'flowAsset') {
+      // 资产态保存 = 登记该资产的新版本（assets.saveVersion），由 T6 在属性栏接线；
+      // 本函数（实例/模版/服务的落库通道）对资产不落库，避免误写模版端点。
+      return null
+    }
     if (state.currentKind === 'service') {
       const service = currentServiceOf(state)
       if (!service) return null
@@ -183,7 +212,7 @@ export function useDocumentActions(
   /**
    * 创建实例（图2 交互改造核心；工作台全局化改版重写）：
    *  - 实例态：等价于保存实例（名称动态为「保存实例/保存服务」）。
-   *  - 模板态（「创建实例」/「创建服务」按钮，或模板态「运行」前置）：
+   *  - 模板态 / 资产态（「创建实例」/「创建服务」按钮，或该态「运行」前置）：
    *      1. 目标会话 = 勾选「开启新会话」？新建主会话（createSession 端点，
    *         一次性临时选项，不持久化）: 当前主会话（state.sessionId）；
    *      2. 目标会话已有同模式实例（每会话单实例）→ 弹二次确认「新运行的工作流
@@ -193,6 +222,9 @@ export function useDocumentActions(
    *         afterCreate?.(saved)（「运行」入口接续启动）。
    *  - 返回：即时创建路径返回保存的文档；弹确认框路径返回 null（后续统一经
    *    afterCreate 回调接续，调用方不得依赖返回值判断成功）。
+   *
+   *  资产态与模板态同口径（用户裁决）：画布内容先转实例再运行；资产详情只提供
+   *  模式/名称/描述/元参数，节点与连线一律取当前画布（编辑中的草稿即事实源）。
    */
   const createInstanceFromCanvas = useCallback(async (
     afterCreate?: (created: WorkflowDocument | ServiceState) => void,
@@ -202,8 +234,9 @@ export function useDocumentActions(
       const saved = await saveCanvas()
       return (state.currentKind === 'workflow' ? saved as WorkflowDocument | null : null)
     }
-    if (state.currentKind !== 'flowTemplate') return null
-    const template = currentFlowTemplateOf(state)
+    // 实例只能由「模版 / 资产」生成：两种来源共用同一实例化通道
+    if (!isInstanceSourceKind(state.currentKind)) return null
+    const template = instanceSourceOf(state)
     if (!template) return null
 
     // ---- 目标会话：勾选「开启新会话」→ 新建主会话（一次性动作） ----

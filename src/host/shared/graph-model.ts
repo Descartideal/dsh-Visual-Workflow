@@ -99,6 +99,13 @@ export interface RoleNode extends BaseNode {
     promptFilePath?: string
     /** 所属协作组 id（组内成员节点字段）。 */
     groupId?: string | null
+    /**
+     * 来源角色资产 id（可选；仅「从资产拖入画布」时写入，从模版/实例拖入不写）。
+     * 用途：工作流资产保存时，据此把内联角色登记为**源资产的新版本**（内容已被改过时）
+     * 或仅登记引用（内容与源版本全等时触发去重）。
+     * 语义边界：这是「节点来源」事实，不参与执行；wf_graph_patch 不暴露该字段（保留现值）。
+     */
+    sourceAssetId?: string
   }
 }
 

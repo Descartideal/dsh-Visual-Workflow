@@ -1,9 +1,10 @@
 import type { Dict } from '../../i18n.js';
-import type { LibTab } from '../../studio/studio-state.js';
+import type { LibTab, LibrarySource } from '../../studio/studio-state.js';
 import type { RoleTemplate, FileTemplate, DatabaseTemplate, GroupTemplate } from '../../../host/shared/types.js';
 import type { WorkflowTemplate } from '../../../host/shared/graph-model.js';
+import type { RoleAssetSummary, WorkflowAssetSummary } from '../../../host/shared/asset-types.js';
 export interface LibSelectionInfo {
-    kind: 'workflow' | 'workflowTemplate' | 'role' | 'file' | 'database' | 'parentTemplate' | 'stage' | 'groupTemplate' | 'service';
+    kind: 'workflow' | 'workflowTemplate' | 'flowAsset' | 'roleAsset' | 'role' | 'file' | 'database' | 'parentTemplate' | 'stage' | 'groupTemplate' | 'service';
     id: string;
 }
 export interface DragPayload {
@@ -23,6 +24,12 @@ export interface LeftPanelProps {
     copy: Dict;
     libTab: LibTab;
     onSetTab(tab: LibTab): void;
+    /** 库来源（模版 / 资产）与切换回调。 */
+    librarySource: LibrarySource;
+    onSetLibrarySource(source: LibrarySource): void;
+    /** 搜索关键词（两态共用）与输入回调。 */
+    libSearch: string;
+    onSetLibSearch(query: string): void;
     open: boolean;
     width: number;
     mode: 'mode1' | 'mode2';
@@ -40,6 +47,11 @@ export interface LeftPanelProps {
     currentSessionId: string;
     /** 工作流模板列表（全局共享；按当前 mode 过滤后传入；图2 交互改造）。 */
     flowTemplates: WorkflowTemplate[];
+    /** 资产列表（Active 版本索引；资产态左栏数据源）。 */
+    assets: {
+        workflows: WorkflowAssetSummary[];
+        roles: RoleAssetSummary[];
+    };
     parentTemplate: RoleTemplate | null;
     roleTemplates: RoleTemplate[];
     fileTemplates: FileTemplate[];
@@ -54,6 +66,15 @@ export interface LeftPanelProps {
     modeName(presetId: string | null | undefined): string;
     onSelectWorkflow(id: string): void;
     onSelectFlowTemplate(id: string): void;
+    /** 打开工作流资产为画布文档（资产态）。 */
+    onSelectFlowAsset(id: string): void;
+    /** 打开角色资产（属性栏编辑）。 */
+    onOpenRoleAsset(id: string): void;
+    /** 角色资产拖入画布。 */
+    onPlaceRoleAsset(id: string, position: {
+        x: number;
+        y: number;
+    }): void;
     onSelectLib(kind: LibSelectionInfo['kind'], id: string): void;
     onPlaceTemplate(kind: 'role' | 'file' | 'database', id: string, position: {
         x: number;

@@ -1,0 +1,51 @@
+import type { Dispatch } from 'react';
+import type { AssetDetail, AssetKind, RoleAssetType } from '../../host/shared/asset-types.js';
+import type { StudioAction, StudioState } from '../studio/studio-state.js';
+import type { RemoteFace } from './useRemote.js';
+import type { ToastFace } from './useToast.js';
+import type { Dict } from '../i18n.js';
+/** 入库 / 登记新版本的返回面（后端 promoteAsset / saveAssetVersion 契约）。 */
+export interface AssetPromoteResult {
+    assetId: string;
+    versionId: number;
+    rowId: string;
+    /** true = 内容与当前 Active 版本全等，未新增版本（去重命中）。 */
+    unchanged: boolean;
+    /** 角色资产的种类（角色入库返回）。 */
+    roleAssetType?: RoleAssetType;
+    /** 因本次入库被判定为共享的角色资产 id 列表。 */
+    sharedRoleAssetIds?: string[];
+}
+export interface AssetsFace {
+    assets: StudioState['assets'];
+    assetDoc: StudioState['assetDoc'];
+    assetVersions: StudioState['assetVersions'];
+    /** 重新加载资产列表（Active 版本索引）。 */
+    refresh(): Promise<void>;
+    /** 取单个资产详情（按 kind 装载对应状态槽；失败返回 null）。 */
+    loadAsset(kind: AssetKind, assetId: string): Promise<AssetDetail | null>;
+    /** 模版 → 资产入库（同一模版再次入库 = 同一资产的新版本）。 */
+    promote(kind: AssetKind, templateId: string): Promise<AssetPromoteResult | null>;
+    /** 资产态保存：登记该资产的新版本。 */
+    saveVersion(kind: AssetKind, assetId: string, payload: unknown): Promise<AssetPromoteResult | null>;
+    /** 打开版本上拉列表数据（回滚选择）。 */
+    openVersions(kind: AssetKind, assetId: string): Promise<void>;
+    /** 关闭版本上拉列表数据。 */
+    closeVersions(): void;
+    /**
+     * 回滚 Active 指针到历史版本（不改写历史版本内容）。
+     * @returns 是否成功（失败时调用方保留现场：不收起版本列表、不清理界面残留）。
+     */
+    rollback(kind: AssetKind, assetId: string, versionId: number): Promise<boolean>;
+    /**
+     * 退役资产（Active 移除、历史版本保留）。
+     * @returns 是否成功（语义同 rollback）。
+     */
+    retire(kind: AssetKind, assetId: string): Promise<boolean>;
+    /** 打开工作流资产文档：装载详情后把画布切到该资产（资产态画布文档）。 */
+    openFlowAsset(assetId: string): Promise<void>;
+    /** 打开角色资产：装载详情后在属性栏编辑。 */
+    openRoleAsset(assetId: string): Promise<void>;
+}
+/** 资产面（远端失败已就地翻译为提示；返回值 null 表示本次调用未产生结果）。 */
+export declare function useAssets(remote: RemoteFace, dispatch: Dispatch<StudioAction>, notify: ToastFace['toast'], toastError: ToastFace['toastError'], t: Dict, state: StudioState): AssetsFace;

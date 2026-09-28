@@ -216,8 +216,11 @@ export function ctxOf(env: TestEnv, options: { userQuestions?: boolean } = {}): 
   }
 }
 
-/** 注册一组工具；返回聚合 disposer（逐个注销，注销失败向上抛出以便测试暴露问题）。 */
-export function registerTools<H>(
+/**
+ * 注册一组工具；返回聚合 disposer（逐个注销，注销失败向上抛出以便测试暴露问题）。
+ * 宿主类型由各注册函数的入参推导（不同工具的宿主缝只要求「其上多一个子集」）。
+ */
+export function registerTools<H extends object>(
   env: TestEnv,
   host: H,
   registrars: Array<(ctx: ToolCtxLike, host: H) => () => void>,

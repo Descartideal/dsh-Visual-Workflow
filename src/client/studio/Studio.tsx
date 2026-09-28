@@ -29,6 +29,7 @@ import { useServiceControl } from '../hooks/useServiceControl.js'
 import { useModeSwitch } from '../hooks/useModeSwitch.js'
 import { usePanelLayout } from '../hooks/usePanelLayout.js'
 import { useDocumentActions } from '../hooks/useDocumentActions.js'
+import { useAssets } from '../hooks/useAssets.js'
 import { useCanvasActions } from '../hooks/useCanvasActions.js'
 import { useEditorActions } from '../hooks/useEditorActions.js'
 import { useRunActions } from '../hooks/useRunActions.js'
@@ -37,9 +38,9 @@ import { useLibraryDrag } from '../hooks/useLibraryDrag.js'
 import { useStudioBoot, pickInitialInstanceForSession } from '../hooks/useStudioBoot.js'
 import { useKeyShortcuts } from '../hooks/useKeyShortcuts.js'
 import {
-  currentFlowOf, currentServiceOf, currentFlowTemplateOf, editorDataOf, instanceRunningOf, isRunningOf,
+  currentFlowOf, currentServiceOf, currentFlowTemplateOf, currentFlowAssetOf, editorDataOf, instanceRunningOf, isRunningOf,
   leftPanelOpenOf, bottomPanelOpenOf, inspectorOpenOf, panelsFullyCollapsedOf, nextPanelMode,
-  PANEL_MODE_NONE,
+  PANEL_MODE_NONE, type LibrarySource,
 } from './studio-state.js'
 import { StudioLayout } from './StudioLayout.js'
 import type { CanvasApi } from '../components/canvas/GraphCanvas.js'
@@ -96,16 +97,19 @@ export function Studio({ t, sessionId, remote: remoteProp, onRunImmersive }: Stu
 
   const currentService = currentServiceOf(state)
   const currentFlowTemplate = currentFlowTemplateOf(state)
+  const currentFlowAsset = currentFlowAssetOf(state)
   const editorData = editorDataOf(state)
   const running = isRunningOf(state)
-  // 画布左上角工作流名称角标（用户批注：显示方式「模板/实例（工作流名称）」；采用「模板：名」「实例：名」）
+  // 画布左上角工作流名称角标（用户批注：显示方式「模版/实例/资产（工作流名称）」）
   const canvasCaption = currentFlowTemplate
     ? `${t.canvasCaptionTemplate}${currentFlowTemplate.name ?? ''}`
-    : currentService
-      ? `${t.canvasCaptionInstance}${currentService.name ?? ''}`
-      : currentFlow
-        ? `${t.canvasCaptionInstance}${currentFlow.name ?? ''}`
-        : ''
+    : currentFlowAsset
+      ? `${t.canvasCaptionAsset}${currentFlowAsset.name ?? ''}`
+      : currentService
+        ? `${t.canvasCaptionInstance}${currentService.name ?? ''}`
+        : currentFlow
+          ? `${t.canvasCaptionInstance}${currentFlow.name ?? ''}`
+          : ''
   // 运行中双向同步（需求 §4.5.8）：当前运行节点高亮 = 快照中 status=running 的节点
   // id 列表（GraphCanvas 渲染 is-highlighted；防回环：只写视图，不进保存/撤销历史）。
   const highlightedNodeIds = useMemo(() => runningNodeIds(state.run.snapshot), [state.run.snapshot])
@@ -182,12 +186,45 @@ export function Studio({ t, sessionId, remote: remoteProp, onRunImmersive }: Stu
 
   // ---------- 交互编排面（拆分至 hooks/ 的 controller hooks） ----------
   const doc = useDocumentActions(state, dispatch, guard, notify, toastError, workflows, flowTemplates, templates, selection, serviceControl, remote, t)
+  // 资产面（模版晋升而来的可复用资料）：列表/详情/入库/版本/回滚/退役 + 资产态画布打开。
+  // 先于 editor 装配：属性栏的入库/回滚/资产态保存由 useEditorActions 经此面编排。
+  const assets = useAssets(remote, dispatch, notify, toastError, t, state)
   const canvas = useCanvasActions(state, dispatch, notify, history, t, { locks: runLocks, saveCanvas: doc.saveCanvas })
-  const editor = useEditorActions(state, dispatch, notify, toastError, t, workflows, flowTemplates, templates, selection, remote, doc.saveCanvas, canvas.removeSelected, canvas.removeLine, doc.selectWorkflow, doc.selectFlowTemplate, { locks: runLocks })
+  const editor = useEditorActions(state, dispatch, notify, toastError, t, workflows, flowTemplates, templates, assets, selection, remote, doc.saveCanvas, canvas.removeSelected, canvas.removeLine, doc.selectWorkflow, doc.selectFlowTemplate, { locks: runLocks })
   const run = useRunActions(state, dispatch, notify, toastError, t, remote, runControl, serviceControl, doc.saveCanvas, doc.createInstanceFromCanvas)
   const transfer = useStudioTransfer(state, dispatch, notify, toastError, t, remote, templates, flowTemplates, workflows, editor.patchEditor, editorData, personaInputRef, groupMdInputRef)
   const { beginLibraryDrag, dragPreview, dropGroupId } = useLibraryDrag(canvasShellRef, canvasApiRef)
   useKeyShortcuts(state, dispatch, selection, history, canvas.removeLine, canvas.removeSelected)
+
+  // ---------- 资产列表装载（工作台挂载时一次；写入/退役/回滚后由 assets 自身刷新） ----------
+  useEffect(() => {
+    void assets.refresh()
+  }, [assets.refresh])
+
+  // ---------- 库来源切换（模版 / 资产） ----------
+  // 同时切「左侧库来源」与「画布文档类型」：画布上的旧类型文档经未保存守卫后清空
+  // （与模式切换同口径——不做无提示的跨类型混用）。
+  const setLibrarySource = useCallback((source: LibrarySource) => {
+    if (source === state.librarySource) return
+    guard.guard(() => {
+      dispatch({ type: 'SET_LIBRARY_SOURCE', source })
+      dispatch({ type: 'CLEAR_CANVAS' })
+    })
+  }, [dispatch, guard, state.librarySource])
+
+  /** 打开工作流资产为画布文档（资产态；未保存守卫后装载详情并投影画布）。 */
+  const selectFlowAsset = useCallback((assetId: string) => {
+    guard.guard(() => { void assets.openFlowAsset(assetId) })
+  }, [assets, guard])
+
+  /** 角色资产拖入画布：先装载详情（节点字段来源），再生成内联节点并写 sourceAssetId。 */
+  const placeRoleAsset = useCallback((assetId: string, position: { x: number; y: number }) => {
+    void (async () => {
+      const detail = await assets.loadAsset('role', assetId)
+      if (!detail || !('systemPrompt' in detail)) return
+      canvas.placeRoleAssetNode(detail, position)
+    })()
+  }, [assets, canvas])
 
   // ---------- 初始化加载 ----------
   useStudioBoot(
@@ -274,6 +311,7 @@ export function Studio({ t, sessionId, remote: remoteProp, onRunImmersive }: Stu
       groupMdInputRef={groupMdInputRef}
       dispatch={dispatch}
       doc={doc}
+      assets={assets}
       canvas={canvas}
       editor={editor}
       run={run}
@@ -292,6 +330,9 @@ export function Studio({ t, sessionId, remote: remoteProp, onRunImmersive }: Stu
       handleRun={handleRun}
       panelsCollapsed={panelsCollapsed}
       onTogglePanels={togglePanels}
+      onSetLibrarySource={setLibrarySource}
+      onSelectFlowAsset={selectFlowAsset}
+      onPlaceRoleAsset={placeRoleAsset}
     />
   )
 }

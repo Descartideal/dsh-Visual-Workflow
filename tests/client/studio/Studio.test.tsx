@@ -395,6 +395,186 @@ describe('Studio 交互', () => {
 })
 
 // ---------------------------------------------------------------------------
+// 资产态（模版 / 资产来源）：来源切换 + 搜索过滤 + 资产卡片拖拽/打开
+// ---------------------------------------------------------------------------
+
+/** 资产感知的假远端：listAssets / getAsset 返回可渲染的资产内容。 */
+function assetRemoteStub(): RemoteFace & { calls: Array<{ endpoint: string; args: Record<string, unknown> }> } {
+  const calls: Array<{ endpoint: string; args: Record<string, unknown> }> = []
+  const workflowDetail = {
+    assetId: 'a-1',
+    versionId: 2,
+    rowId: 'row-2',
+    mode: 'mode1',
+    name: '资产流程',
+    description: '资产描述',
+    nodes: [
+      { id: 's1', kind: 'start', position: { x: 40, y: 40 }, data: { label: '启动' } },
+      { id: 'n1', kind: 'agent', position: { x: 320, y: 40 }, data: { label: '节点一', systemPrompt: '', provider: '', model: '' } },
+    ],
+    lines: [],
+    roleVersionIds: [],
+    createdAt: 1,
+  }
+  const roleDetail = {
+    assetId: 'a-r1',
+    versionId: 1,
+    rowId: 'row-1',
+    kind: 'agent',
+    roleAssetType: 'standalone',
+    name: '资产角色',
+    systemPrompt: '你是资产角色',
+    provider: 'deepseek',
+    model: 'deepseek-chat',
+    retryLimit: 3,
+    referenceWorkflowIds: [],
+    createdAt: 1,
+  }
+  const remote: RemoteFace = {
+    stream: vi.fn(async () => undefined),
+    call: vi.fn(async (endpoint: string, args?: Record<string, unknown>) => {
+      calls.push({ endpoint, args: args ?? {} })
+      if (endpoint === EP.EP_LIST_ASSETS) {
+        return {
+          workflows: [{ assetId: 'a-1', versionId: 2, name: '资产流程', description: '资产描述', updatedAt: 1 }],
+          roles: [{ assetId: 'a-r1', versionId: 1, name: '资产角色', kind: 'agent', roleAssetType: 'standalone', updatedAt: 1 }],
+        }
+      }
+      if (endpoint === EP.EP_GET_ASSET) return args?.kind === 'role' ? roleDetail : workflowDetail
+      if (endpoint === EP.EP_LIST_TEMPLATES && String(args?.kind ?? '') === 'role') {
+        return [{ id: 'r-1', kind: 'agent', name: '研究员', systemPrompt: '' }]
+      }
+      if (endpoint === EP.EP_LIST_TEMPLATES && String(args?.kind ?? '') === 'group') return []
+      if (endpoint === EP.EP_PRESETS) return []
+      if (endpoint === EP.EP_MODELS) return []
+      if (endpoint === EP.EP_ACTIVE_RUNS) return []
+      if (endpoint === EP.EP_LIST_WORKFLOWS) return []
+      if (endpoint === EP.EP_LIST_FLOW_TEMPLATES) return []
+      return []
+    }),
+  }
+  return { ...remote, calls }
+}
+
+/** 点击左栏底部的来源标签（模版 / 资产）。 */
+async function switchLibrarySource(label: string): Promise<void> {
+  await act(async () => {
+    Array.from(document.querySelectorAll<HTMLButtonElement>('.wf-lib-source__tab')).find((item) => item.textContent === label)?.click()
+  })
+}
+
+/** 左栏库卡片（按文本定位）。 */
+function libraryCard(text: string): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>('.wf-docitem')).find((item) => item.textContent?.includes(text))
+}
+
+describe('资产态：库来源切换与搜索', () => {
+  it('资产态工作流 Tag 只显示工作流资产分区（不再分区实例 + 工作流模版）', async () => {
+    await renderStudioWith(assetRemoteStub())
+    await switchLibrarySource(zh.libSourceAsset)
+    expect(textOf('.wf-docgroup')).toEqual([zh.assetWorkflows])
+    expect(textOf('.wf-docitem__label')).toEqual(['资产流程'])
+    // 来源标签选中态
+    const assetTab = Array.from(document.querySelectorAll('.wf-lib-source__tab')).find((item) => item.textContent === zh.libSourceAsset)
+    expect(assetTab?.classList.contains('is-active')).toBe(true)
+  })
+
+  it('资产态角色 Tag 直接显示角色资产（不再分区父代理 / 角色模版）', async () => {
+    await renderStudioWith(assetRemoteStub())
+    await switchLibrarySource(zh.libSourceAsset)
+    await act(async () => { libTab(zh.libTab.role)?.click() })
+    expect(textOf('.wf-docgroup')).toEqual([zh.assetRoles])
+    expect(textOf('.wf-docitem__label')).toEqual(['资产角色'])
+    await act(async () => { libTab(zh.libTab.data)?.click() })
+    expect(textOf('.wf-docgroup')).toEqual([])
+    expect(document.querySelector('.wf-hint')?.textContent).toBe(zh.assetListNotSupported)
+  })
+
+  it('搜索栏过滤资产卡片；无命中显示空态文案', async () => {
+    await renderStudioWith(assetRemoteStub())
+    await switchLibrarySource(zh.libSourceAsset)
+    const input = document.querySelector('.wf-lib-search__input') as HTMLInputElement
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+      descriptor?.set?.call(input, '资')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(textOf('.wf-docitem__label')).toEqual(['资产流程'])
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+      descriptor?.set?.call(input, '无命中关键词')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(textOf('.wf-docitem__label')).toEqual([])
+    expect(document.querySelector('.wf-hint')?.textContent).toBe(zh.searchNoResult)
+  })
+
+  it('模版态有未保存修改时切来源：先弹未保存确认，放弃后才切并清空画布', async () => {
+    await renderStudioWith(assetRemoteStub())
+    // 模版态：新建模板草稿 + 拖入角色模板 → 画布有节点且 dirty
+    await createDraft()
+    await act(async () => { libTab(zh.libTab.role)?.click() })
+    await dragRoleToCanvas()
+    expect(nodeCount()).toBe(1)
+
+    await switchLibrarySource(zh.libSourceAsset)
+    const confirmDialog = document.querySelector('.wf-confirm')
+    expect(confirmDialog?.textContent).toContain(zh.unsavedMessage)
+    // 取消：来源与画布都不变
+    await act(async () => {
+      Array.from(confirmDialog!.querySelectorAll('button')).find((item) => item.textContent === zh.unsavedCancel)?.click()
+    })
+    expect(textOf('.wf-docitem__label')).toContain('研究员')
+    expect(nodeCount()).toBe(1)
+
+    // 放弃修改：切到资产来源并清空画布（当前 Tab 为角色 → 显示角色资产分区）
+    await switchLibrarySource(zh.libSourceAsset)
+    await act(async () => {
+      Array.from(document.querySelector('.wf-confirm')!.querySelectorAll('button')).find((item) => item.textContent === zh.unsavedDiscard)?.click()
+    })
+    expect(textOf('.wf-docgroup')).toEqual([zh.assetRoles])
+    expect(nodeCount()).toBe(0)
+  })
+})
+
+describe('资产态：卡片拖拽与打开', () => {
+  it('点击工作流资产 → 打开为画布文档（getAsset + 资产角标 + 节点渲染）', async () => {
+    const remote = assetRemoteStub()
+    await renderStudioWith(remote)
+    await switchLibrarySource(zh.libSourceAsset)
+    await act(async () => {
+      const card = libraryCard('资产流程')
+      if (card) pointerClick(card)
+    })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    const getCall = remote.calls.find((call) => call.endpoint === EP.EP_GET_ASSET)
+    expect(getCall?.args).toEqual({ kind: 'workflow', assetId: 'a-1' })
+    expect(nodeCount()).toBe(2)
+    expect(document.querySelector('.wf-canvas-caption')?.textContent).toBe(`${zh.canvasCaptionAsset}资产流程`)
+  })
+
+  it('拖入角色资产 → 生成角色节点（getAsset kind=role + 节点标签为资产名）', async () => {
+    const remote = assetRemoteStub()
+    await renderStudioWith(remote)
+    await switchLibrarySource(zh.libSourceAsset)
+    // 先打开工作流资产（画布存在当前文档，节点才有落点）
+    await act(async () => {
+      const card = libraryCard('资产流程')
+      if (card) pointerClick(card)
+    })
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    const before = nodeCount()
+
+    await act(async () => { libTab(zh.libTab.role)?.click() })
+    await dragCardTo('资产角色', 620, 300)
+    await act(async () => { await Promise.resolve(); await Promise.resolve() })
+    expect(remote.calls.some((call) => call.endpoint === EP.EP_GET_ASSET && call.args.kind === 'role')).toBe(true)
+    expect(nodeCount()).toBe(before + 1)
+    expect(Array.from(document.querySelectorAll('.wf-graph__node .wf-node--agent')).length).toBeGreaterThan(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // pickInitialInstanceForSession：进入工作台自动选中实例（工作台全局化：当前主会话实例）
 // ---------------------------------------------------------------------------
 

@@ -121,3 +121,13 @@ export { lineKeyOf, nodeConfigKeyOf, summarizeFlowChange, type FlowChangeSummary
 
 // 运行看护与宿主重启对账
 export { WATCHDOG_INTERVAL_MS, reconcileStaleRuns, scheduleIdleWatchdog, sweepWatchdogOnce } from './watchdog.js'
+
+// 运行终态「复盘指令」注入（事实派生纯函数 + 注入缝；终态注入入口是 RuntimeBase.notifyRunReflection）
+export {
+  injectReflection,
+  reflectionFactsOf,
+  REFLECTION_MESSAGE_SOURCE,
+  type InjectReflectionInput,
+  type ReflectionInjectionEnv,
+  type RunReflectionFactsInput,
+} from './runtime-reflection.js'

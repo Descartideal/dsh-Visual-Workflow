@@ -19,6 +19,13 @@ export function createInitialState(sessionId: string): StudioState {
   return {
     sessionId,
     libTab: 'workflow',
+    // 缺省模版态（库来源与画布文档类型默认都是模版）
+    librarySource: 'template',
+    libSearch: '',
+    assets: { workflows: [], roles: [] },
+    assetDoc: null,
+    assetRoleDoc: null,
+    assetVersions: null,
     mode: 'mode1',
     workflows: [],
     services: [],

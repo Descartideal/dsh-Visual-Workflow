@@ -1,17 +1,25 @@
 // src/client/components/sidebar/library-model.ts
 //
-// 库内容模型构建器（纯函数，无副作用）：把「左侧库」的完整逻辑（四 Tag 分区、
-// 实例/模板/角色/文件/数据库/阶段/协作组卡片、拖拽 payload、选中高亮判定）
-// 提取为一份可复用的数据模型。左侧栏（LeftPanel，竖向列表）与底栏（BottomPanel，
-// 横向卡片流）共用同一 builder，保证两份显示的「内容与选中/拖拽逻辑」完全一致——
-// 本次仅改显示布局与交互，不涉及任何后端/数据改动。
+// 库内容模型构建器（纯函数，无副作用）：把「左侧库」的完整逻辑（来源（模版/资产）、
+// 四 Tag 分区、实例/模板/资产/角色/文件/数据库/阶段/协作组卡片、搜索过滤、
+// 拖拽 payload、选中高亮判定）提取为一份可复用的数据模型。左侧栏（LeftPanel，
+// 竖向列表）与底栏（BottomPanel，横向卡片流）共用同一 builder，保证两份显示的
+// 「内容与选中/拖拽逻辑」完全一致。
 //
 // 单一职责：本文件只负责「从原始列表 + 回调构造卡片模型」，不渲染任何 JSX。
+//
+// 来源语义（用户裁决）：
+//   - 模版态：实例列表 + 工作流模板 / 父代理 + 角色模板 / 文件 + 数据库 / 阶段 + 协作组；
+//   - 资产态：工作流资产（不再区分实例与工作流模版）/ 角色资产（不再区分父/子代理），
+//     数据与其他 Tag 显示空态提示（V1 资产只含工作流与角色）。
+// 搜索（两态常驻、共用同一关键词）：过滤当前 Tag 下**全部分区**卡片，
+// 字段 = 名称 + 描述/角色提示词，大小写不敏感、首尾 trim。
 
 import type { Dict } from '../../i18n.js'
-import type { LibTab, LibSelKind } from '../../studio/studio-state.js'
+import type { LibTab, LibSelKind, LibrarySource } from '../../studio/studio-state.js'
 import type { RoleTemplate, FileTemplate, DatabaseTemplate, GroupTemplate } from '../../../host/shared/types.js'
 import type { WorkflowTemplate } from '../../../host/shared/graph-model.js'
+import type { RoleAssetSummary, WorkflowAssetSummary } from '../../../host/shared/asset-types.js'
 import type { DragPayload, LibSelectionInfo } from './LeftPanel.js'
 
 /** 单张卡片模型（拖拽 payload + 展示字段；底栏只取 name，左栏取全部）。 */
@@ -29,12 +37,14 @@ export interface LibraryCardModel {
   payload: DragPayload
 }
 
-/** 分区模型（标题 + 是否显示「＋」新建 + 卡片列表）。 */
+/** 分区模型（标题 + 是否显示「＋」新建 + 卡片列表 + 空态文案）。 */
 export interface LibrarySectionModel {
   key: string
   title: string
   plus: boolean
   plusKind?: 'file' | 'database' | 'flowTemplate' | 'group'
+  /** 本分区无卡片时的空态文案（模版态/资产态不同）。 */
+  emptyText: string
   cards: LibraryCardModel[]
 }
 
@@ -45,10 +55,12 @@ export interface LibraryTabModel {
   icon: string
 }
 
-/** 库内容模型（Tab 列表 + 当前 Tag 下的分区列表）。 */
+/** 库内容模型（Tab 列表 + 当前 Tag 下的分区列表 + 整页空态）。 */
 export interface LibraryModel {
   tabs: LibraryTabModel[]
   sections: LibrarySectionModel[]
+  /** 整页空态（资产态数据/其他 Tag、搜索无结果）；null = 无整页空态。 */
+  emptyHint: string | null
 }
 
 /** builder 输入：原始列表 + 选区 + 全部回调（与 LeftPanel props 高度重合）。 */
@@ -56,9 +68,15 @@ export interface LibraryModelInput {
   copy: Dict
   libTab: LibTab
   mode: 'mode1' | 'mode2'
+  /** 库来源（模版 / 资产）；缺省模版态。 */
+  librarySource?: LibrarySource
+  /** 搜索关键词（两态共用；大小写不敏感）。 */
+  libSearch?: string
   workflows: Array<{ id: string; name: string; description?: string; nodes?: unknown[]; runStatus?: string | null; sessionId?: string }>
   currentSessionId: string
   flowTemplates: WorkflowTemplate[]
+  /** 资产列表（Active 版本索引）；缺省空。 */
+  assets?: { workflows: WorkflowAssetSummary[]; roles: RoleAssetSummary[] }
   parentTemplate: RoleTemplate | null
   roleTemplates: RoleTemplate[]
   fileTemplates: FileTemplate[]
@@ -69,6 +87,12 @@ export interface LibraryModelInput {
   modeName(presetId: string | null | undefined): string
   onSelectWorkflow(id: string): void
   onSelectFlowTemplate(id: string): void
+  /** 打开工作流资产为画布文档（资产态）。 */
+  onSelectFlowAsset?(id: string): void
+  /** 打开角色资产（资产态属性栏编辑）。 */
+  onOpenRoleAsset?(id: string): void
+  /** 角色资产拖入画布（生成角色节点并写入来源资产 id）。 */
+  onPlaceRoleAsset?(id: string, position: { x: number; y: number }): void
   onSelectLib(kind: LibSelectionInfo['kind'], id: string): void
   onPlaceTemplate(kind: 'role' | 'file' | 'database', id: string, position: { x: number; y: number }): void
   onPlaceTemplateIntoGroup(kind: 'role', id: string, groupId: string, position: { x: number; y: number }): void
@@ -117,9 +141,18 @@ export function buildLibraryModel(input: LibraryModelInput): LibraryModel {
   const {
     copy: t, libTab, workflows, currentSessionId, flowTemplates, parentTemplate,
     roleTemplates, fileTemplates, databaseTemplates, groupTemplates, stageKinds, libSelection,
-    onSelectWorkflow, onSelectFlowTemplate, onSelectLib, onPlaceTemplate,
-    onPlaceTemplateIntoGroup, onPlaceStage, onPlaceGroupFromTemplate, onPlaceParent, onCreateNew,
+    onSelectWorkflow, onSelectFlowTemplate, onSelectFlowAsset, onOpenRoleAsset, onPlaceRoleAsset,
+    onSelectLib, onPlaceTemplate, onPlaceTemplateIntoGroup, onPlaceStage, onPlaceGroupFromTemplate,
+    onPlaceParent, onCreateNew,
   } = input
+
+  const librarySource: LibrarySource = input.librarySource === 'asset' ? 'asset' : 'template'
+  const assets = input.assets ?? { workflows: [], roles: [] }
+  const query = String(input.libSearch ?? '').trim().toLowerCase()
+  const searching = query !== ''
+  /** 搜索命中判定（任一字段包含关键词即命中；空关键词全命中）。 */
+  const hit = (...fields: unknown[]): boolean =>
+    !searching || fields.some((field) => String(field ?? '').toLowerCase().includes(query))
 
   const isActive = (kind: string, id: string): boolean => libSelection?.kind === kind && libSelection?.id === id
 
@@ -132,7 +165,52 @@ export function buildLibraryModel(input: LibraryModelInput): LibraryModel {
 
   const sections: LibrarySectionModel[] = []
 
-  if (libTab === 'workflow') {
+  if (librarySource === 'asset') {
+    // 资产态：工作流 Tag 直接列工作流资产；角色 Tag 直接列角色资产（均不再分区）。
+    // 数据/其他 Tag 无资产（V1 只含工作流与角色）→ 整页空态。
+    if (libTab === 'workflow') {
+      sections.push({
+        key: 'assetWorkflows',
+        title: t.assetWorkflows,
+        plus: false,
+        emptyText: t.assetEmptyHint,
+        cards: (assets.workflows ?? [])
+          .filter((item) => hit(item.name, item.description))
+          .map((item) => card(
+            item.assetId, 'flowAsset', item.assetId, '▦', String(item.name ?? ''),
+            item.description ? truncate(item.description, 60) : `v${item.versionId}`,
+            {
+              label: String(item.name ?? ''),
+              // 工作流资产 = 画布文档：点击与拖入都「打开为资产态画布」
+              onClick: () => onSelectFlowAsset?.(item.assetId),
+              onDrop: () => onSelectFlowAsset?.(item.assetId),
+            },
+          )),
+      })
+    } else if (libTab === 'role') {
+      sections.push({
+        key: 'assetRoles',
+        title: t.assetRoles,
+        plus: false,
+        emptyText: t.assetEmptyHint,
+        cards: (assets.roles ?? [])
+          // 搜索命中 = 名称 + 职责摘要（summary = Active 版本提示词前 60 字；模版态行为不变）
+          .filter((item) => hit(item.name, item.summary))
+          .map((item) => card(
+            item.assetId, 'roleAsset', item.assetId, '◆', String(item.name ?? ''),
+            // 副行 = 角色资产种类（父代理资产直接标注父代理；其余按 standalone/inline/shared）
+            item.kind === 'parent'
+              ? t.parentAgent
+              : String((t.roleAssetType as Record<string, string>)[item.roleAssetType] || `v${item.versionId}`),
+            {
+              label: String(item.name ?? ''),
+              onClick: () => onOpenRoleAsset?.(item.assetId),
+              onDrop: (position) => onPlaceRoleAsset?.(item.assetId, position ?? { x: 120, y: 80 }),
+            },
+          )),
+      })
+    }
+  } else if (libTab === 'workflow') {
     // 图2 交互改造：左侧「工作流」Tag 拆两区——上方实例列表（无 + 号；运行中卡片
     // 名称右侧显示运行状态；工作台全局化：全部会话实例 + 当前主会话实例「当前」标签），
     // 下方工作流模板列表（+ 号新建空白模板；全局共享）。
@@ -140,40 +218,47 @@ export function buildLibraryModel(input: LibraryModelInput): LibraryModel {
       key: 'instances',
       title: t.flowInstances,
       plus: false,
-      cards: (workflows ?? []).map((item) => card(
-        item.id, 'workflow', item.id, '▦', String(item.name ?? ''),
-        item.description ? truncate(item.description, 60) : `${item.nodes?.length ?? 0} ${t.nodes}`,
-        {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectWorkflow(item.id),
-          onDrop: () => onSelectWorkflow(item.id),
-        },
-        false,
-        item.runStatus,
-        item.sessionId === currentSessionId,
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (workflows ?? [])
+        .filter((item) => hit(item.name, item.description))
+        .map((item) => card(
+          item.id, 'workflow', item.id, '▦', String(item.name ?? ''),
+          item.description ? truncate(item.description, 60) : `${item.nodes?.length ?? 0} ${t.nodes}`,
+          {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectWorkflow(item.id),
+            onDrop: () => onSelectWorkflow(item.id),
+          },
+          false,
+          item.runStatus,
+          item.sessionId === currentSessionId,
+        )),
     })
     sections.push({
       key: 'flowTemplates',
       title: t.flowTemplates,
       plus: true,
       plusKind: 'flowTemplate',
-      cards: (flowTemplates ?? []).map((item) => card(
-        item.id, 'workflowTemplate', item.id, '▦', String(item.name ?? ''),
-        item.description ? truncate(item.description, 60) : `${item.nodes?.length ?? 0} ${t.nodes}`,
-        {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectFlowTemplate(item.id),
-          onDrop: () => onSelectFlowTemplate(item.id),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (flowTemplates ?? [])
+        .filter((item) => hit(item.name, item.description))
+        .map((item) => card(
+          item.id, 'workflowTemplate', item.id, '▦', String(item.name ?? ''),
+          item.description ? truncate(item.description, 60) : `${item.nodes?.length ?? 0} ${t.nodes}`,
+          {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectFlowTemplate(item.id),
+            onDrop: () => onSelectFlowTemplate(item.id),
+          },
+        )),
     })
   } else if (libTab === 'role') {
-    if (parentTemplate) {
+    if (parentTemplate && hit(parentTemplate.name, parentTemplate.systemPrompt)) {
       sections.push({
         key: 'parent',
         title: t.parentAgent,
         plus: false,
+        emptyText: t.libEmptyTemplates,
         cards: [
           card(
             parentTemplate.id, 'parentTemplate', parentTemplate.id, '父', String(parentTemplate.name ?? t.parentAgent),
@@ -193,14 +278,17 @@ export function buildLibraryModel(input: LibraryModelInput): LibraryModel {
       key: 'roles',
       title: t.roleTemplates,
       plus: true,
-      cards: (roleTemplates ?? []).map((item) => card(
-        item.id, 'role', item.id, '◆', String(item.name ?? ''), roleSubline(item), {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectLib('role', item.id),
-          onDrop: (position) => onPlaceTemplate('role', item.id, position ?? { x: 120, y: 80 }),
-          onDropIntoGroup: (groupId, position) => onPlaceTemplateIntoGroup('role', item.id, groupId, position ?? { x: 120, y: 80 }),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (roleTemplates ?? [])
+        .filter((item) => hit(item.name, item.systemPrompt))
+        .map((item) => card(
+          item.id, 'role', item.id, '◆', String(item.name ?? ''), roleSubline(item), {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectLib('role', item.id),
+            onDrop: (position) => onPlaceTemplate('role', item.id, position ?? { x: 120, y: 80 }),
+            onDropIntoGroup: (groupId, position) => onPlaceTemplateIntoGroup('role', item.id, groupId, position ?? { x: 120, y: 80 }),
+          },
+        )),
     })
   } else if (libTab === 'data') {
     sections.push({
@@ -208,57 +296,81 @@ export function buildLibraryModel(input: LibraryModelInput): LibraryModel {
       title: t.files,
       plus: true,
       plusKind: 'file',
-      cards: (fileTemplates ?? []).map((item) => card(
-        item.id, 'file', item.id, '▤', String(item.name ?? ''), fileSubline(item), {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectLib('file', item.id),
-          onDrop: (position) => onPlaceTemplate('file', item.id, position ?? { x: 120, y: 80 }),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (fileTemplates ?? [])
+        .filter((item) => hit(item.name, item.content, item.fileName))
+        .map((item) => card(
+          item.id, 'file', item.id, '▤', String(item.name ?? ''), fileSubline(item), {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectLib('file', item.id),
+            onDrop: (position) => onPlaceTemplate('file', item.id, position ?? { x: 120, y: 80 }),
+          },
+        )),
     })
     sections.push({
       key: 'databases',
       title: t.databases,
       plus: true,
       plusKind: 'database',
-      cards: (databaseTemplates ?? []).map((item) => card(
-        item.id, 'database', item.id, '▦', String(item.name ?? ''), truncate(String(item.description ?? ''), 60), {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectLib('database', item.id),
-          onDrop: (position) => onPlaceTemplate('database', item.id, position ?? { x: 120, y: 80 }),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (databaseTemplates ?? [])
+        .filter((item) => hit(item.name, item.description))
+        .map((item) => card(
+          item.id, 'database', item.id, '▦', String(item.name ?? ''), truncate(String(item.description ?? ''), 60), {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectLib('database', item.id),
+            onDrop: (position) => onPlaceTemplate('database', item.id, position ?? { x: 120, y: 80 }),
+          },
+        )),
     })
   } else {
     sections.push({
       key: 'stages',
       title: t.stages,
       plus: false,
-      cards: (stageKinds ?? []).map((card0) => card(
-        card0.kind, 'stage', card0.kind, '⬢', String(card0.label), String(t.stagePinHint), {
-          label: String(card0.label),
-          onClick: () => onSelectLib('stage', card0.kind),
-          onDrop: (position) => onPlaceStage(card0.kind, position ?? { x: 120, y: 80 }),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (stageKinds ?? [])
+        .filter((item) => hit(item.label))
+        .map((card0) => card(
+          card0.kind, 'stage', card0.kind, '⬢', String(card0.label), String(t.stagePinHint), {
+            label: String(card0.label),
+            onClick: () => onSelectLib('stage', card0.kind),
+            onDrop: (position) => onPlaceStage(card0.kind, position ?? { x: 120, y: 80 }),
+          },
+        )),
     })
     sections.push({
       key: 'groups',
       title: t.groupTemplates,
       plus: true,
       plusKind: 'group',
-      cards: (groupTemplates ?? []).map((item) => card(
-        item.id, 'groupTemplate', item.id, '☰', String(item.name ?? ''), truncate(String((item as { collabPrompt?: unknown }).collabPrompt ?? ''), 60), {
-          label: String(item.name ?? ''),
-          onClick: () => onSelectLib('groupTemplate', item.id),
-          onDrop: (position) => onPlaceGroupFromTemplate(item.id, position ?? { x: 120, y: 80 }),
-        },
-      )),
+      emptyText: t.libEmptyTemplates,
+      cards: (groupTemplates ?? [])
+        .filter((item) => hit(item.name, (item as { collabPrompt?: unknown }).collabPrompt))
+        .map((item) => card(
+          item.id, 'groupTemplate', item.id, '☰', String(item.name ?? ''), truncate(String((item as { collabPrompt?: unknown }).collabPrompt ?? ''), 60), {
+            label: String(item.name ?? ''),
+            onClick: () => onSelectLib('groupTemplate', item.id),
+            onDrop: (position) => onPlaceGroupFromTemplate(item.id, position ?? { x: 120, y: 80 }),
+          },
+        )),
     })
   }
+
+  // 整页空态判定（顺序即优先级）：
+  //   ① 资产态的数据/其他 Tag 无资产分类 → 「该分类暂无资产」；
+  //   ② 搜索无命中 → 「没有匹配的条目」；
+  //   ③ 其余情况由分区自身的 emptyText 表达。
+  let emptyHint: string | null = null
+  if (librarySource === 'asset' && (libTab === 'data' || libTab === 'other')) emptyHint = t.assetListNotSupported
+  const matched = sections.some((section) => section.cards.length > 0)
+  if (emptyHint === null && searching && !matched) emptyHint = t.searchNoResult
+
+  // 搜索是「过滤」语义：无命中的分区不显示（避免出现「暂无模板，点击 + 新建」的误导空态）
+  const visible = searching ? sections.filter((section) => section.cards.length > 0) : sections
 
   // 动态 tab 标签（模式二「其他」无暂停阶段等虽由 stageKinds 体现，但 tab 文案固定四类）
   const tabs: LibraryTabModel[] = TAB_DEFS.map((def) => ({ ...def, label: (t.libTab as Record<string, string>)[def.key] ?? def.label }))
 
-  return { tabs, sections }
+  return { tabs, sections: visible, emptyHint }
 }

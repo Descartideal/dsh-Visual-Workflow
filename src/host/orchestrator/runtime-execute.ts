@@ -375,6 +375,8 @@ export class RuntimeExecute extends RuntimeLaunch {
     snapshot.endedAt = this.isoNow()
     terminalizeNodes(snapshot, this.now(), isFailed ? 'fail' : 'completed')
     await this.persistWarn(run)
+    // 终态写盘之后、释放内存条目之前：向父代理注入复盘指令（best-effort，失败只告警）
+    this.notifyRunReflection(run, '[visual-workflow] 复盘指令注入：')
     // 收尾完成即释放内存条目（终态已持久化；运行锁随状态自然释放）
     this.runs.delete(snapshot.id)
     return { ok: true, runId: snapshot.id, status: snapshot.status }

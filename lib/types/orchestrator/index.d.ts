@@ -11,3 +11,4 @@ export { OUTPUT_SUMMARY_LIMIT, cloneSnapshot, createRunSnapshot, lastAssistantTe
 export { RESUMABLE_STATUSES, buildResumedSnapshot, findResumableRun, type ResumeInput, type ResumeResult, } from './resume.js';
 export { lineKeyOf, nodeConfigKeyOf, summarizeFlowChange, type FlowChangeSummary } from './flow-diff.js';
 export { WATCHDOG_INTERVAL_MS, reconcileStaleRuns, scheduleIdleWatchdog, sweepWatchdogOnce } from './watchdog.js';
+export { injectReflection, reflectionFactsOf, REFLECTION_MESSAGE_SOURCE, type InjectReflectionInput, type ReflectionInjectionEnv, type RunReflectionFactsInput, } from './runtime-reflection.js';

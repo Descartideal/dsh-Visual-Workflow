@@ -1,10 +1,18 @@
 import type { StudioState, EditorData, CanvasNode } from './studio-types.js';
 import type { WorkflowDocument, WorkflowTemplate } from '../../host/shared/graph-model.js';
 import type { ServiceState } from '../../host/shared/types.js';
+import type { WorkflowAssetDetail } from '../../host/shared/asset-types.js';
 /** 当前工作流文档（内存列表优先；草稿回退）。 */
 export declare function currentFlowOf(state: StudioState): WorkflowDocument | null;
 /** 当前工作流模板文档（模板态画布）。 */
 export declare function currentFlowTemplateOf(state: StudioState): WorkflowTemplate | null;
+/** 当前工作流资产文档（资产态画布；当前 id 必须与已装载的 assetDoc 同源）。 */
+export declare function currentFlowAssetOf(state: StudioState): WorkflowAssetDetail | null;
+/**
+ * 模板态与资产态共用「创建实例」前置（实例只能由模版/资产生成）：
+ * 二者画布内容语义一致（编辑中的草稿 → 保存为实例），运行入口也走同一分支。
+ */
+export declare function isInstanceSourceKind(kind: StudioState['currentKind']): boolean;
 /** 当前服务文档。 */
 export declare function currentServiceOf(state: StudioState): ServiceState | null;
 /**

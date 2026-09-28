@@ -24,6 +24,24 @@ import { VisualWorkflowApi, type ApiHost } from '../../../../src/host/api/index.
 import { stageLabel } from '../../../../src/host/graph/index.js'
 import type { DatabaseNode, RoleNode, StageNode, WorkflowDocument } from '../../../../src/host/shared/graph-model.js'
 import type { EmbeddingEngine } from '../../../../src/host/embedding/engine.js'
+import type {
+  AssetVersionEntry,
+  RoleAssetDetail,
+  RoleAssetSummary,
+  WorkflowAssetDetail,
+  WorkflowAssetSummary,
+} from '../../../../src/host/shared/asset-types.js'
+import { ERR_ASSET_NOT_FOUND, ERR_ASSET_VERSION_NOT_FOUND } from '../../../../src/host/shared/protocol.js'
+
+/** 资产库能力缝（从宿主能力缝派生，避免测试夹具自建第二份资产契约）。 */
+export type FakeAssets = NonNullable<ApiHost['assets']>
+
+/** 能力缝入参/出参按方法签名派生（与宿主能力缝零漂移）。 */
+type RolePromoteInput = Parameters<FakeAssets['promoteRole']>[0]
+type WorkflowPromoteInput = Parameters<FakeAssets['promoteWorkflow']>[0]
+type RoleSaveInput = Parameters<FakeAssets['saveRoleVersion']>[0]
+type WorkflowSaveInput = Parameters<FakeAssets['saveWorkflowVersion']>[0]
+type AssetPromoteResult = Awaited<ReturnType<FakeAssets['promoteRole']>>
 
 /** 待回收资源（测试文件 afterEach 经 cleanupAll 回收）。 */
 export const cleanups: Array<() => Promise<void>> = []
@@ -152,8 +170,301 @@ export interface Harness {
   dataDir: string
 }
 
+export interface HarnessOptions {
+  /** 编排配置覆盖（既有用例传 Partial<OrchestratorConfig> 的写法保持可用）。 */
+  config?: Partial<OrchestratorConfig>
+  /** 资产库能力缝注入（伪资产库；缺省不装配，用于 501 路径）。 */
+  assets?: FakeAssets
+}
+
+export interface RoleSeed {
+  assetId: string
+  versionId?: number
+  rowId?: string
+  name: string
+  sourceTemplateId?: string
+  /** 入库来源指纹（与摘要条目同源；真实实现由 SQLite 索引行承载）。 */
+  sourceFingerprint?: string
+  roleAssetType?: RoleAssetDetail['roleAssetType']
+  referenceWorkflowIds?: string[]
+  systemPrompt?: string
+  provider?: string
+  model?: string
+}
+
+export interface WorkflowSeed {
+  assetId: string
+  versionId?: number
+  rowId?: string
+  name: string
+  sourceTemplateId?: string
+  sourceFingerprint?: string
+  description?: string
+}
+
+/**
+ * 伪资产库：只记录调用与返回可控数据，按 assets 模块公共入口的形状实现（结构兼容由
+ * `implements FakeAssets` 锁定）。资产事实的真伪不属本层测试范围——边界只负责翻译。
+ */
+export class FakeAssetStore implements FakeAssets {
+  /** 调用痕迹（断言「边界传了什么」用）。 */
+  calls: { promoteRole: unknown[]; promoteWorkflow: unknown[]; saveRole: unknown[]; saveWorkflow: unknown[]; rollback: unknown[]; retired: string[] } = {
+    promoteRole: [],
+    promoteWorkflow: [],
+    saveRole: [],
+    saveWorkflow: [],
+    rollback: [],
+    retired: [],
+  }
+  /** 下一次入库/保存抛出的领域错误（重复入库 409 路径用）。 */
+  nextPromoteError: Error | null = null
+  roleAssets = new Map<string, RoleAssetDetail>()
+  workflowAssets = new Map<string, WorkflowAssetDetail>()
+  roleVersions = new Map<string, AssetVersionEntry[]>()
+  workflowVersions = new Map<string, AssetVersionEntry[]>()
+  /** 入库时记录的来源指纹（索引条目回填用；真实实现由 SQLite 索引行承载）。 */
+  roleFingerprints = new Map<string, string>()
+  workflowFingerprints = new Map<string, string>()
+
+  /** 登记一个角色资产（Active 版本 v1；内容最简，测试按需覆盖）。 */
+  seedRole(seed: RoleSeed): RoleAssetDetail {
+    const versionId = seed.versionId ?? 1
+    const detail: RoleAssetDetail = {
+      assetId: seed.assetId,
+      versionId,
+      rowId: seed.rowId ?? `${seed.assetId}-r${versionId}`,
+      kind: 'agent',
+      roleAssetType: seed.roleAssetType ?? 'standalone',
+      name: seed.name,
+      systemPrompt: seed.systemPrompt ?? `提示词：${seed.name}`,
+      provider: '',
+      model: '',
+      retryLimit: 3,
+      referenceWorkflowIds: seed.referenceWorkflowIds ?? [],
+      createdAt: 1_700_000_000_000,
+      ...(seed.sourceTemplateId === undefined ? {} : { sourceTemplateId: seed.sourceTemplateId }),
+    }
+    this.roleAssets.set(seed.assetId, detail)
+    this.roleVersions.set(seed.assetId, [
+      { versionId, rowId: detail.rowId, name: detail.name, createdAt: detail.createdAt, source: 'human', active: true },
+    ])
+    this.setRoleFingerprint(seed.assetId, seed.sourceFingerprint)
+    return detail
+  }
+
+  /** 登记一个工作流资产（Active 版本 v1；图内容最简）。 */
+  seedWorkflow(seed: WorkflowSeed): WorkflowAssetDetail {
+    const versionId = seed.versionId ?? 1
+    const detail: WorkflowAssetDetail = {
+      assetId: seed.assetId,
+      versionId,
+      rowId: seed.rowId ?? `${seed.assetId}-r${versionId}`,
+      mode: 'mode1',
+      name: seed.name,
+      description: seed.description ?? '',
+      nodes: [],
+      lines: [],
+      roleVersionIds: [],
+      createdAt: 1_700_000_000_000,
+      ...(seed.sourceTemplateId === undefined ? {} : { sourceTemplateId: seed.sourceTemplateId }),
+    }
+    this.workflowAssets.set(seed.assetId, detail)
+    this.workflowVersions.set(seed.assetId, [
+      { versionId, rowId: detail.rowId, name: detail.name, createdAt: detail.createdAt, source: 'human', active: true },
+    ])
+    this.setWorkflowFingerprint(seed.assetId, seed.sourceFingerprint)
+    return detail
+  }
+
+  /** 记录来源指纹（undefined 表示该资产非模版晋升：索引条目不携带来源指纹）。 */
+  private setRoleFingerprint(assetId: string, fingerprint: string | undefined): void {
+    if (fingerprint === undefined) this.roleFingerprints.delete(assetId)
+    else this.roleFingerprints.set(assetId, fingerprint)
+  }
+
+  private setWorkflowFingerprint(assetId: string, fingerprint: string | undefined): void {
+    if (fingerprint === undefined) this.workflowFingerprints.delete(assetId)
+    else this.workflowFingerprints.set(assetId, fingerprint)
+  }
+
+  /** 追加一个角色版本并把它设为 Active（历史版本条目保留，与被测语义一致）。 */
+  private appendRoleVersion(assetId: string, versionId: number, rowId: string): AssetVersionEntry {
+    const entries = this.roleVersions.get(assetId) ?? []
+    const entry: AssetVersionEntry = { versionId, rowId, name: this.roleAssets.get(assetId)?.name ?? '', createdAt: 1_700_000_000_000 + versionId, source: 'human', active: true }
+    this.roleVersions.set(assetId, [...entries.map((item) => ({ ...item, active: false })), entry])
+    return entry
+  }
+
+  /** 追加一个工作流版本并把它设为 Active。 */
+  private appendWorkflowVersion(assetId: string, versionId: number, rowId: string): AssetVersionEntry {
+    const entries = this.workflowVersions.get(assetId) ?? []
+    const entry: AssetVersionEntry = { versionId, rowId, name: this.workflowAssets.get(assetId)?.name ?? '', createdAt: 1_700_000_000_000 + versionId, source: 'human', active: true }
+    this.workflowVersions.set(assetId, [...entries.map((item) => ({ ...item, active: false })), entry])
+    return entry
+  }
+
+  /** 索引条目与详情同源：来源指纹只有入库路径会写，故由 seed 显式携带。 */
+  private roleSummaryOf(detail: RoleAssetDetail, sourceFingerprint?: string): RoleAssetSummary {
+    return {
+      assetId: detail.assetId,
+      versionId: detail.versionId,
+      name: detail.name,
+      kind: detail.kind,
+      roleAssetType: detail.roleAssetType,
+      updatedAt: detail.createdAt,
+      ...(detail.sourceTemplateId === undefined ? {} : { sourceTemplateId: detail.sourceTemplateId }),
+      ...(sourceFingerprint === undefined ? {} : { sourceFingerprint }),
+    }
+  }
+
+  private workflowSummaryOf(detail: WorkflowAssetDetail, sourceFingerprint?: string): WorkflowAssetSummary {
+    return {
+      assetId: detail.assetId,
+      versionId: detail.versionId,
+      name: detail.name,
+      description: detail.description,
+      updatedAt: detail.createdAt,
+      ...(detail.sourceTemplateId === undefined ? {} : { sourceTemplateId: detail.sourceTemplateId }),
+      ...(sourceFingerprint === undefined ? {} : { sourceFingerprint }),
+    }
+  }
+
+  async listRoleAssets(): Promise<RoleAssetSummary[]> {
+    return [...this.roleAssets.values()].map((detail) => this.roleSummaryOf(detail, this.roleFingerprints.get(detail.assetId)))
+  }
+
+  async getRoleAsset(assetId: string): Promise<RoleAssetDetail | null> {
+    return this.roleAssets.get(assetId) ?? null
+  }
+
+  async listRoleVersions(assetId: string): Promise<AssetVersionEntry[]> {
+    return this.roleVersions.get(assetId) ?? []
+  }
+
+  async rollbackRoleAsset(assetId: string, versionId: number): Promise<RoleAssetDetail> {
+    this.calls.rollback.push({ kind: 'role', assetId, versionId })
+    const detail = this.roleAssets.get(assetId)
+    const version = (this.roleVersions.get(assetId) ?? []).find((item) => item.versionId === versionId)
+    if (!detail || !version) throw this.versionNotFound(assetId, versionId)
+    const rolled = { ...detail, versionId, rowId: version.rowId }
+    this.roleAssets.set(assetId, rolled)
+    return rolled
+  }
+
+  async retireRoleAsset(assetId: string): Promise<void> {
+    this.calls.retired.push(`role:${assetId}`)
+    this.roleAssets.delete(assetId)
+  }
+
+  async listWorkflowAssets(): Promise<WorkflowAssetSummary[]> {
+    return [...this.workflowAssets.values()].map((detail) => this.workflowSummaryOf(detail, this.workflowFingerprints.get(detail.assetId)))
+  }
+
+  async getWorkflowAsset(assetId: string): Promise<WorkflowAssetDetail | null> {
+    return this.workflowAssets.get(assetId) ?? null
+  }
+
+  async listWorkflowVersions(assetId: string): Promise<AssetVersionEntry[]> {
+    return this.workflowVersions.get(assetId) ?? []
+  }
+
+  async rollbackWorkflowAsset(assetId: string, versionId: number): Promise<WorkflowAssetDetail> {
+    this.calls.rollback.push({ kind: 'workflow', assetId, versionId })
+    const detail = this.workflowAssets.get(assetId)
+    const version = (this.workflowVersions.get(assetId) ?? []).find((item) => item.versionId === versionId)
+    if (!detail || !version) throw this.versionNotFound(assetId, versionId)
+    const rolled = { ...detail, versionId, rowId: version.rowId }
+    this.workflowAssets.set(assetId, rolled)
+    return rolled
+  }
+
+  async retireWorkflowAsset(assetId: string): Promise<void> {
+    this.calls.retired.push(`workflow:${assetId}`)
+    this.workflowAssets.delete(assetId)
+  }
+
+  /** 模版晋升：以模版 id 作为资产 id 建首个版本（与真实实现同语义，便于测试推定 assetId）。 */
+  async promoteRole(input: RolePromoteInput): Promise<AssetPromoteResult> {
+    this.calls.promoteRole.push(input)
+    this.throwIfInjected()
+    const existing = this.roleAssets.get(input.templateId)
+    if (existing) {
+      return { assetId: existing.assetId, versionId: existing.versionId, rowId: existing.rowId, unchanged: true, roleAssetType: existing.roleAssetType }
+    }
+    const detail = this.seedRole({
+      assetId: input.templateId,
+      name: input.role.name,
+      sourceTemplateId: input.templateId,
+      sourceFingerprint: input.fingerprint,
+      systemPrompt: input.role.systemPrompt,
+    })
+    return { assetId: detail.assetId, versionId: detail.versionId, rowId: detail.rowId, unchanged: false, roleAssetType: detail.roleAssetType }
+  }
+
+  async promoteWorkflow(input: WorkflowPromoteInput): Promise<AssetPromoteResult> {
+    this.calls.promoteWorkflow.push(input)
+    this.throwIfInjected()
+    const existing = this.workflowAssets.get(input.templateId)
+    if (existing) {
+      return { assetId: existing.assetId, versionId: existing.versionId, rowId: existing.rowId, unchanged: true }
+    }
+    const detail = this.seedWorkflow({
+      assetId: input.templateId,
+      name: input.name,
+      description: input.description,
+      sourceTemplateId: input.templateId,
+      sourceFingerprint: input.fingerprint,
+    })
+    return { assetId: detail.assetId, versionId: detail.versionId, rowId: detail.rowId, unchanged: false }
+  }
+
+  async saveRoleVersion(input: RoleSaveInput): Promise<AssetPromoteResult> {
+    this.calls.saveRole.push(input)
+    this.throwIfInjected()
+    const existing = this.roleAssets.get(input.assetId)
+    if (!existing) throw this.assetNotFound(input.assetId)
+    const versionId = existing.versionId + 1
+    const rowId = `${input.assetId}-r${versionId}`
+    this.roleAssets.set(input.assetId, { ...existing, versionId, rowId, name: input.role.name, systemPrompt: input.role.systemPrompt })
+    this.appendRoleVersion(input.assetId, versionId, rowId)
+    return { assetId: input.assetId, versionId, rowId, unchanged: false, roleAssetType: existing.roleAssetType }
+  }
+
+  async saveWorkflowVersion(input: WorkflowSaveInput): Promise<AssetPromoteResult> {
+    this.calls.saveWorkflow.push(input)
+    this.throwIfInjected()
+    const existing = this.workflowAssets.get(input.assetId)
+    if (!existing) throw this.assetNotFound(input.assetId)
+    const versionId = existing.versionId + 1
+    const rowId = `${input.assetId}-r${versionId}`
+    this.workflowAssets.set(input.assetId, { ...existing, versionId, rowId, name: input.name, description: input.description })
+    this.appendWorkflowVersion(input.assetId, versionId, rowId)
+    return { assetId: input.assetId, versionId, rowId, unchanged: false }
+  }
+
+  private throwIfInjected(): void {
+    if (!this.nextPromoteError) return
+    const error = this.nextPromoteError
+    this.nextPromoteError = null
+    throw error
+  }
+
+  private assetNotFound(assetId: string): Error {
+    return this.errorLike(`资产 ${assetId} 不存在或已退役`, ERR_ASSET_NOT_FOUND)
+  }
+
+  private versionNotFound(assetId: string, versionId: number): Error {
+    return this.errorLike(`资产 ${assetId} 的版本 v${versionId} 不存在`, ERR_ASSET_VERSION_NOT_FOUND)
+  }
+
+  /** 伪造领域错误形状（只带稳定 code；HTTP 状态映射是边界职责，不在此实现）。 */
+  private errorLike(message: string, code: string): Error {
+    return Object.assign(new Error(message), { code })
+  }
+}
+
 /** 构造端点测试夹具（真实 store + fake 运行时/宿主能力）。 */
-export async function makeHarness(config?: Partial<OrchestratorConfig>): Promise<Harness> {
+export async function makeHarness(options?: HarnessOptions): Promise<Harness> {
   const dir = await mkdtemp(join(tmpdir(), 'vw-api-'))
   cleanups.push(() => rm(dir, { recursive: true, force: true }))
   const store = new FlowStore(dir)
@@ -173,7 +484,7 @@ export async function makeHarness(config?: Partial<OrchestratorConfig>): Promise
       retryLimitDefault: 3,
       reactIterationLimitDefault: 50,
       wfAskAgentTimeoutMs: 500,
-      ...config,
+      ...options?.config,
     },
     logger: { warn: () => {}, info: () => {}, debug: () => {} },
     newRunId: () => {
@@ -184,7 +495,7 @@ export async function makeHarness(config?: Partial<OrchestratorConfig>): Promise
   })
   const ctx = new FakeCtx()
   const engine: EmbeddingEngine = { source: 'bm25', dimension: 0, async embed() { throw new Error('bm25 only') }, dispose() {} }
-  const host: ApiHost = { orchestrator: runtime, store, dataDir: dir, engine }
+  const host: ApiHost = { orchestrator: runtime, store, dataDir: dir, engine, ...(options?.assets ? { assets: options.assets } : {}) }
   const api = new VisualWorkflowApi(ctx, host)
   return { api, host, runtime, store, ctx, dataDir: dir }
 }

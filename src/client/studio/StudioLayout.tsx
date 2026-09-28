@@ -10,9 +10,10 @@
 
 import type { Dispatch } from 'react'
 import type { Dict } from '../i18n.js'
-import type { StudioAction, StudioState, EditorData, CanvasEdge } from './studio-state.js'
+import type { StudioAction, StudioState, EditorData, CanvasEdge, LibrarySource } from './studio-state.js'
 import { agentPatchedNodeIdsOf } from './studio-selectors.js'
 import type { DocumentActionsFace } from '../hooks/useDocumentActions.js'
+import type { AssetsFace } from '../hooks/useAssets.js'
 import type { CanvasActionsFace } from '../hooks/useCanvasActions.js'
 import type { EditorActionsFace } from '../hooks/useEditorActions.js'
 import type { RunActionsFace } from '../hooks/useRunActions.js'
@@ -82,6 +83,8 @@ export interface StudioLayoutProps {
   // ---- 交互面（controller hook faces） ----
   dispatch: Dispatch<StudioAction>
   doc: DocumentActionsFace
+  /** 资产面（左栏资产列表/资产态画布打开；入库/版本/回滚/退役由 T6 在属性栏接线）。 */
+  assets: AssetsFace
   canvas: CanvasActionsFace
   editor: EditorActionsFace
   run: RunActionsFace
@@ -101,6 +104,12 @@ export interface StudioLayoutProps {
   switchMode: (mode: 'mode1' | 'mode2') => void
   /** 运行联动：宿主让出空间（官方右侧 Sidebar 全屏时缩回）+ 折叠自身左右栏 + 触发运行。 */
   handleRun: () => void
+  /** 库来源切换（模版 / 资产；未保存守卫后同时切库来源与画布文档类型）。 */
+  onSetLibrarySource: (source: LibrarySource) => void
+  /** 打开工作流资产为画布文档（资产态；未保存守卫后切换）。 */
+  onSelectFlowAsset: (assetId: string) => void
+  /** 角色资产拖入画布（装配层先装载详情，再生成内联角色节点）。 */
+  onPlaceRoleAsset: (assetId: string, position: { x: number; y: number }) => void
   /** 两侧侧栏是否都已折叠（顶部一键折叠/展开按钮用）。 */
   panelsCollapsed: boolean
   /** 顶部一键折叠/展开左右侧栏回调。 */
@@ -115,11 +124,12 @@ export function StudioLayout(props: StudioLayoutProps) {
     toolbarRunning, runStatusByNode, highlightedNodeIds, modeName,
     lockedNodeIds, lockedEdgeIds, instanceRunning,
     canvasApiRef, canvasShellRef, libraryImportRef, personaInputRef, groupMdInputRef,
-    dispatch, doc, canvas, editor, run, transfer, selection, history, guard, panels, toast,
+    dispatch, doc, assets, canvas, editor, run, transfer, selection, history, guard, panels, toast,
     beginLibraryDrag, dragPreview, dropGroupId,
     modeMenuOpen, setModeMenuOpen, switchMode, canvasCaption,
     leftOpen, bottomOpen, inspectorOpen,
     handleRun, panelsCollapsed, onTogglePanels,
+    onSetLibrarySource, onSelectFlowAsset, onPlaceRoleAsset,
   } = props
 
   // 自动布局（自主编排方案 §7.3 / D-15 方案 B）：打开/接收文档时若节点缺坐标（哨兵 {0,0}）
@@ -142,9 +152,16 @@ export function StudioLayout(props: StudioLayoutProps) {
 
   // 左栏（LeftPanel）与底栏（BottomPanel）共用同一份库内容 props（内容/选中/拖拽逻辑一致，
   // 本次仅显示布局不同）。仅 open/width 或 open/height 两处按各自布局传入。
+  // 「实例来源态」= 模版态或资产态：二者都以「画布内容 → 新实例」为保存/运行前置（同口径）。
+  const isInstanceSource = state.currentKind === 'flowTemplate' || state.currentKind === 'flowAsset'
   const libraryProps = {
     libTab: state.libTab,
     onSetTab: (tab: import('../studio/studio-state.js').LibTab) => dispatch({ type: 'SET_LIB_TAB', tab }),
+    // 库来源（模版 / 资产）+ 搜索关键词（两态共用）；来源切换会同时切画布文档类型
+    librarySource: state.librarySource,
+    onSetLibrarySource,
+    libSearch: state.libSearch,
+    onSetLibSearch: (query: string) => dispatch({ type: 'SET_LIB_SEARCH', query }),
     mode: state.mode,
     // 工作台全局化：实例列表 = 全部会话实例（带各自 sessionId 供「当前」标签/状态徽标归属）。
     // 状态徽标：当前实例快照优先（600ms 快轮询），否则全量活跃 run 摘要（2s 轮询）。
@@ -164,6 +181,8 @@ export function StudioLayout(props: StudioLayoutProps) {
       }
     }),
     flowTemplates: (state.flowTemplates ?? []).filter((item) => item.mode === state.mode),
+    // 资产列表（Active 索引）：资产态左栏数据源（模版态不消费）
+    assets: state.assets,
     parentTemplate,
     roleTemplates,
     fileTemplates: state.templates.file as import('../../host/shared/types.js').FileTemplate[],
@@ -174,6 +193,10 @@ export function StudioLayout(props: StudioLayoutProps) {
     modeName,
     onSelectWorkflow: doc.selectWorkflow,
     onSelectFlowTemplate: doc.selectFlowTemplate,
+    // 资产卡片：工作流资产 → 打开为画布文档；角色资产 → 属性栏编辑 / 拖入画布
+    onSelectFlowAsset,
+    onOpenRoleAsset: (id: string) => { void assets.openRoleAsset(id) },
+    onPlaceRoleAsset,
     onSelectLib: editor.selectLibraryCard,
     onPlaceTemplate: canvas.placeTemplateNode,
     onPlaceTemplateIntoGroup: canvas.placeTemplateIntoGroup,
@@ -262,11 +285,9 @@ export function StudioLayout(props: StudioLayoutProps) {
             mode={state.mode}
             panelsCollapsed={panelsCollapsed}
             onTogglePanels={onTogglePanels}
-            // 图2 交互改造：保存按钮按当前对象态动态命名——模板态「创建实例/创建服务」
-            // （画布内容保存为新实例，模板不变）；实例态「保存实例/保存服务」（保存到当前实例）。
-            saveLabel={state.currentKind === 'flowTemplate'
-              ? (state.mode === 'mode2' ? t.createService : t.createInstance)
-              : (state.mode === 'mode2' ? t.saveServiceInstance : t.saveInstance)}
+            // 图2 交互改造：保存按钮按当前对象态动态命名——模板态/资产态「创建实例/创建服务」
+            // （画布内容保存为新实例，模板/资产不变）；实例态「保存实例/保存服务」（保存到当前实例）。
+            saveLabel={isInstanceSource ? (state.mode === 'mode2' ? t.createService : t.createInstance) : (state.mode === 'mode2' ? t.saveServiceInstance : t.saveInstance)}
             onUndo={history.undo}
             onRedo={history.redo}
             onClear={canvas.clearGraph}
@@ -275,7 +296,9 @@ export function StudioLayout(props: StudioLayoutProps) {
             clearTitle={instanceRunning ? t.clearRunningHint : t.clearCanvas}
             onTidy={canvas.tidyGraph}
             canTidy={state.canvas.nodes.length > 0}
-            onSave={() => { void (state.currentKind === 'flowTemplate' ? doc.createInstanceFromCanvas() : doc.saveCanvas()) }}
+            // 资产态「保存」= 登记资产新版本，由 T6 在属性栏资产区接线（assets.saveVersion）；
+            // 工具栏此处对资产态走「创建实例」，与模版态一致（先转实例再运行）。
+            onSave={() => { void (isInstanceSource ? doc.createInstanceFromCanvas() : doc.saveCanvas()) }}
             canSave={Boolean(state.currentId)}
             running={toolbarRunning}
             onStop={() => { void (state.mode === 'mode2' ? run.stopService() : run.stopRun()) }}
@@ -283,8 +306,8 @@ export function StudioLayout(props: StudioLayoutProps) {
             onOpenHistory={() => { void run.openHistory() }}
             canHistory={state.mode === 'mode1' && Boolean(currentFlow)}
             serviceStatus={state.mode === 'mode2' ? { port: currentService?.port, status: currentService?.status } : null}
-            // 「开启新会话」仅模板态显示（一次性临时选项；实例态不显示——实例只认绑定会话）
-            showNewSession={state.currentKind === 'flowTemplate'}
+            // 「开启新会话」仅实例来源态（模版 / 资产）显示（一次性临时选项；实例态不显示——实例只认绑定会话）
+            showNewSession={isInstanceSource}
             instanceOptions={state.instanceOptions}
             onInstanceOptionsChange={(patch) => dispatch({ type: 'INSTANCE_OPTIONS_SET', options: patch })}
           />
@@ -354,7 +377,18 @@ export function StudioLayout(props: StudioLayoutProps) {
           flowMeta={{ nodeCount: state.canvas.nodes.length, revision: Number((currentFlow ?? currentService)?.revision ?? 0) }}
           onPatch={editor.patchEditor}
           onDelete={() => { void editor.deleteEditor() }}
+          // 属性栏「保存」调用点：实例/模版态 = 落库（useDocumentActions.saveCanvas）；
+          // 资产态（flowAsset/roleAsset）= 登记资产新版本（useEditorActions 内按 source 分流）。
           onSave={() => { void editor.saveEditor() }}
+          // 模版态「入库」：先保存模版再 promote（保存未落库即中止）；锁定判定由
+          // useEditorActions 的纯函数给出（已入库且模版内容未再修改 → 按钮禁用）
+          onPromote={() => { void editor.promoteEditor() }}
+          promoteLocked={editor.promoteLocked}
+          // 资产态「回滚」：打开版本上拉列表 → 点击某项回滚 Active 指针
+          onOpenVersions={() => { void editor.openAssetVersions() }}
+          onRollbackVersion={(versionId) => { void editor.rollbackAssetVersion(versionId) }}
+          onCloseVersions={assets.closeVersions}
+          assetVersions={state.assetVersions}
           onSaveAsTemplate={() => { void doc.saveCurrentAsFlowTemplate() }}
           onCopyProxy={canvas.copyToProxy}
           onRemoveMember={canvas.removeGroupMember}
@@ -391,12 +425,14 @@ export function StudioLayout(props: StudioLayoutProps) {
         : null}
 
       {/* 确认弹窗：「保存并继续」在真实保存完成后才继续原操作——需要二次确认的路径
-          （运行中实例保存）本次返回 null，落库发生在用户确认之后，经 onSaved 接续 */}
+          （运行中实例保存）本次返回 null，落库发生在用户确认之后，经 onSaved 接续。
+          保存统一经 editor.saveEditor：实例/模版态转 saveCanvas（同上），资产态走
+          「登记资产新版本」分支（此前直连 saveCanvas 对资产态返回 null，只能放弃修改）。 */}
       <ConfirmDialog
         confirm={state.confirm}
         copy={t}
         onClose={() => dispatch({ type: 'CONFIRM_SET', confirm: null })}
-        onSaveAndProceed={() => { void guard.saveAndProceed((onSaved) => doc.saveCanvas({ onSaved })) }}
+        onSaveAndProceed={() => { void guard.saveAndProceed((onSaved) => editor.saveEditor({ onSaved })) }}
         onDiscardAndProceed={guard.discardAndProceed}
         onResolveImport={(mode) => { void transfer.resolveImportConflict(mode as 'rename' | 'overwrite') }}
       />

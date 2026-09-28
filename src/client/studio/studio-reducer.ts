@@ -39,6 +39,78 @@ export function studioReducer(state: StudioState, action: StudioAction): StudioS
       return { ...state, mode: action.mode }
     case 'SET_LIB_TAB':
       return { ...state, libTab: action.tab }
+    case 'SET_LIBRARY_SOURCE':
+      return { ...state, librarySource: action.source }
+    case 'SET_LIB_SEARCH':
+      return { ...state, libSearch: action.query }
+    case 'ASSETS_LOADED':
+      return { ...state, assets: { workflows: action.workflows, roles: action.roles } }
+    case 'ASSET_DOC_LOADED':
+      return { ...state, assetDoc: action.detail }
+    case 'ROLE_ASSET_LOADED':
+      return { ...state, assetRoleDoc: action.detail }
+    case 'OPEN_FLOW_ASSET': {
+      // 画布 = assetDoc 的纯投影（与 OPEN_FLOW_TEMPLATE 同口径：打开即重置
+      // 选中/编辑器/已保存快照）；assetId 不匹配视为陈旧装载，保持原状态。
+      const detail = state.assetDoc
+      if (!detail || detail.assetId !== action.assetId) return state
+      const canvas = flowToCanvas(detail)
+      return {
+        ...state,
+        currentKind: 'flowAsset',
+        currentId: detail.assetId,
+        canvas,
+        dirty: false,
+        savedGraph: graphSnapshotOf({ ...state, canvas }),
+        run: { runId: null, sessionId: null, snapshot: null },
+        selection: { nodeId: null, edgeId: null, lib: { kind: 'flowAsset', id: detail.assetId } },
+        editor: { source: 'flowAsset', id: detail.assetId },
+        // 「开启新会话」临时选项与打开模板同口径：每次打开资产回到「不新开会话」默认
+        instanceOptions: { newSession: false, workspacePath: '' },
+      }
+    }
+    case 'OPEN_ROLE_ASSET':
+      return {
+        ...state,
+        selection: { nodeId: null, edgeId: null, lib: { kind: 'roleAsset', id: action.assetId } },
+        editor: { source: 'roleAsset', id: action.assetId },
+      }
+    case 'ROLE_ASSET_PATCH':
+      // 属性栏表单实时编辑：字段落 assetRoleDoc（登记新版本时由保存路径整体投影上报）
+      return state.assetRoleDoc ? { ...state, assetRoleDoc: { ...state.assetRoleDoc, ...action.patch } } : state
+    case 'ASSET_VERSIONS_LOADED':
+      return { ...state, assetVersions: { kind: action.kind, assetId: action.assetId, items: action.items } }
+    case 'ASSET_VERSIONS_CLOSED':
+      return { ...state, assetVersions: null }
+    case 'ASSET_CLOSED': {
+      // 退役后该资产不再可见：清空其详情槽（其他资产的已装载详情不动）；
+      // 正打开在画布（flowAsset）或属性栏（roleAsset）时一并清空，避免界面残留已退役资产。
+      const assetId = action.assetId
+      const next: StudioState = {
+        ...state,
+        assetDoc: state.assetDoc?.assetId === assetId ? null : state.assetDoc,
+        assetRoleDoc: state.assetRoleDoc?.assetId === assetId ? null : state.assetRoleDoc,
+        assetVersions: state.assetVersions?.assetId === assetId ? null : state.assetVersions,
+      }
+      const closesCanvas = state.currentKind === 'flowAsset' && state.currentId === assetId
+      const closesEditor = (state.editor?.source === 'roleAsset' && state.editor.id === assetId)
+        || (state.editor?.source === 'flowAsset' && state.editor.id === assetId)
+      if (!closesCanvas && !closesEditor) return next
+      return {
+        ...next,
+        ...(closesCanvas
+          ? {
+              currentId: null,
+              currentKind: null,
+              canvas: { nodes: [], edges: [] },
+              dirty: false,
+              run: { runId: null, sessionId: null, snapshot: null },
+            }
+          : {}),
+        selection: { nodeId: null, edgeId: null, lib: null },
+        editor: null,
+      }
+    }
     case 'WORKFLOWS_LOADED':
       return { ...state, workflows: action.items }
     case 'WORKFLOW_ADDED':
@@ -225,7 +297,19 @@ export function studioReducer(state: StudioState, action: StudioAction): StudioS
                   : service)),
                 dirty: true,
               }
-            : state
+            : state.currentKind === 'flowAsset' && state.assetDoc?.assetId === state.currentId
+              ? {
+                  ...state,
+                  // 资产态名/描述编辑落在 assetDoc 上：资产态保存（登记新版本）由 T6
+                  // 接线的保存路径统一从 assetDoc + 画布取内容。
+                  assetDoc: {
+                    ...state.assetDoc,
+                    ...(action.patch.name !== undefined ? { name: action.patch.name } : {}),
+                    ...(action.patch.description !== undefined ? { description: action.patch.description } : {}),
+                  },
+                  dirty: true,
+                }
+              : state
     case 'SET_DIRTY':
       return { ...state, dirty: action.dirty }
     case 'MARK_SAVED':

@@ -72,6 +72,68 @@ export const railsStyles = `
   box-shadow: inset 0 -2px 0 var(--wf-brand);
 }
 
+/* ---- 库搜索栏（两态常驻：模版 / 资产共用同一关键词；左栏与底栏各一入口） ---- */
+.wf-lib-search {
+  flex: none;
+  padding: 8px 10px 4px;
+}
+
+/* 底栏内的搜索栏：底栏卡片区已有内边距，去掉左右重复留白 */
+.wf-lib-search--bottom {
+  padding: 8px 9px 4px;
+}
+
+.wf-lib-search__input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: var(--wf-layer-2);
+  color: var(--wf-ink);
+  padding: 6px 8px;
+  font-size: 11px;
+}
+
+.wf-lib-search__input:focus {
+  outline: none;
+  border-color: var(--wf-brand);
+}
+
+.wf-lib-search__input::placeholder {
+  color: var(--wf-ink-2);
+}
+
+/* ---- 库来源切换（左栏底部：模版 / 资产；切换同时切库来源与画布文档类型） ---- */
+.wf-lib-source {
+  flex: none;
+  display: flex;
+  gap: 4px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--wf-border);
+}
+
+.wf-lib-source__tab {
+  flex: 1;
+  border: 1px solid var(--wf-border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--wf-ink-2);
+  padding: 6px 4px;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.wf-lib-source__tab:hover {
+  color: var(--wf-ink);
+}
+
+.wf-lib-source__tab.is-active {
+  color: var(--wf-brand);
+  border-color: color-mix(in srgb, var(--wf-brand) 45%, var(--wf-border));
+  background: color-mix(in srgb, var(--wf-brand) 10%, transparent);
+}
+
 /* ---- 底栏（新增；与左栏相互切换；卡片横向 flex-wrap 动态追加排） ---- */
 .wf-bottom-area {
   display: flex;
