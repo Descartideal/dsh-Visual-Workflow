@@ -16,6 +16,11 @@ export interface SidebarRightLike {
     openTab?(kind: string, options?: unknown): void;
     /** 当前是否有挂载的会话面板（无 seat 时 undefined）。 */
     active?(): unknown;
+    /** 0.1.7+: the mounted Session seat is published after its React effect runs. */
+    mounted?: {
+        getSnapshot?(): unknown;
+        subscribe?(listener: () => void): () => void;
+    };
 }
 /** 官方 layout 服务的最小形状（仅用于「先回到会话界面」的兜底导航）。 */
 export interface LayoutLike {
