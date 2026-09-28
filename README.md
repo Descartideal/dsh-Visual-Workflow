@@ -209,37 +209,35 @@
 
 ---
 
-## 安装（Windows）
+## 安装（Windows / WSL）
 
-> **版本适配**：此分支针对 **DeepSeek Harness `0.1.7-rc.2`** 验证，同时保留 `0.1.6-alpha.2` 的客户端挂载与会话快照回退路径。`0.1.7-rc.2` 将右侧栏的 `mounted()` 改为可订阅的 `mounted` 快照；插件从全局面板返回会话时会等待该快照发布后再打开工作台，并以实际挂载的会话决定新工作流的归属。升级宿主前请先在外部终端**完全停止 dsh 进程**：
+> **版本适配**：此版本针对 **DeepSeek Harness `0.1.7-rc.2`** 验证，同时保留 `0.1.6-alpha.2` 的客户端挂载与会话快照回退路径。`0.1.7-rc.2` 将右侧栏的 `mounted()` 改为可订阅的 `mounted` 快照；插件从全局面板返回会话时会等待该快照发布后再打开工作台，并以实际挂载的会话决定新工作流的归属。升级宿主前请先在外部终端**完全停止 dsh 进程**：
 >
 > ```bash
 > npm install -g @deepseek-ai/dsh@0.1.7-rc.2
 > ```
 
-1. **文件管理器定位**：`%USERPROFILE%\.dsh\profiles\web\pnpm-workspace.yaml`,在其中添加：
+1. **检查构建许可**：Windows 的 `%USERPROFILE%\.dsh\profiles\web\pnpm-workspace.yaml` 或 WSL 的 `~/.dsh/profiles/web/pnpm-workspace.yaml` 中，按安装报错为依赖配置 `allowBuilds`。本插件依赖的 `protobufjs` 需要允许构建；若 WSL 上 `onnxruntime-node` 的 postinstall 因下载返回 HTTP 302 而失败，可将它设为 `false`，但相关本地推理功能可能不可用。
 
 ```yaml
 allowBuilds:
-  onnxruntime-node: true
   protobufjs: true
-  sharp: true
 ```
 
-2. **运行插件安装命令**:
+2. **下载 [GitHub Release 的 npm 安装包](https://github.com/Descartideal/dsh-Visual-Workflow/releases/tag/v0.1.1-dsh017.1)，然后安装**：
 
 ```bash
-dsh plugin --profile web add "github:Descartideal/dsh-Visual-Workflow#compat/dsh-0.1.7-rc.2"
+dsh plugin --profile web add /path/to/dsh-visual-workflow-0.1.1-dsh017.1.tgz
 ```
 
-上述命令安装已适配的 fork 分支；原项目位于 [GZX2211/dsh-Visual-Workflow](https://github.com/GZX2211/dsh-Visual-Workflow)。
+请将 `/path/to/` 替换为下载文件的实际路径。此包内已包含编译结果；GitHub 自动生成的“Source code”压缩包不符合 npm 包的目录结构，不能直接传给 `dsh plugin add`。原项目位于 [GZX2211/dsh-Visual-Workflow](https://github.com/GZX2211/dsh-Visual-Workflow)。
 
 版本差异与适配范围见 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 3. **验证挂载**：（可选）
 
 ```bash
-dsh --profile web --dump-config | findstr "visual-workflow"
+dsh --profile web --dump-config | grep "visual-workflow" # Windows PowerShell 可改用 Select-String
 ```
 
 4. **重启** `dsh web`。打开工作台：点击官方**左侧边栏底部的「工作流」入口**（在官方「设置」旁）→ 官方**右侧 Sidebar** 打开「工作流」标签页即完整工作台（再次点击只是回到该标签页，工作台状态常驻保留，不会重新加载）。

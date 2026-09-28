@@ -47,9 +47,9 @@ function isTopLevelArray(yamlText: string): boolean {
 }
 
 describe('T-001 包契约（package.json 基础形态）', () => {
-  it('name 为 dsh-visual-workflow，version 0.1.0，type 为 module', () => {
+  it('name 为 dsh-visual-workflow，version 0.1.1-dsh017.1，type 为 module', () => {
     expect(pkg.name).toBe('dsh-visual-workflow')
-    expect(pkg.version).toBe('0.1.0')
+    expect(pkg.version).toBe('0.1.1-dsh017.1')
     expect(pkg.type).toBe('module')
   })
 
