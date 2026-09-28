@@ -6,8 +6,6 @@
 
 负责将 Host 能力暴露为 Agent-facing Tools，并维护 Tool 基础设施：Tool 定义、参数与输出 Schema、调用方校验、Host 能力调用、输出渲染、可见性与全局开关。
 
-不重新实现 Workflow / Agent / Graph / Storage / Team Runtime。复杂能力应通过 Host 既有服务或能力缝实现。
-
 ## 目录与分类
 
 - 按工具能力组织，文件夹按工具名命名：`wf-run-node/`、`wf-ask/`、`wf-db-query/`等。
@@ -53,12 +51,9 @@ Tool A → Host capability / service ← Tool B
 - 模型可见输出应稳定、紧凑、可预测；输出序列化只有一处实现，业务 Tool 不得重复实现渲染；
 - Tool description 须回答：何时调用？调用前需要什么？失败时会发生什么？是否产生副作用？描述应简洁、无歧义。
 
-## 持久化
-
-Tool 不得定义第二套持久化协议。不得绕过 Storage 直接写 Workflow / Run / Template 数据。
-
 ## 错误处理
+
 稳定错误使用项目已有错误体系和稳定错误码。错误信息应帮助 Agent 修正调用，明确：什么失败、哪个参数 / 状态导致失败、是否可修正后重试。不得吞掉业务错误并返回成功。
 
 ## 核心原则
-Host 能力经 Tool 暴露；Tool 只做适配；基础设施稳定通用；共享逻辑上移 Host；依赖单向；契约优先；纯函数优先；持久化走 Storage；错误可诊断。
+Host 能力经 Tool 暴露；Tool 只做适配；基础设施稳定通用；共享逻辑上移 Host；纯函数优先；持久化走 Storage；错误可诊断。
